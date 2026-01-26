@@ -316,8 +316,24 @@ merge_settings() {
     return
   fi
 
-  # 通常のマージ
-  echo "$defaults" | jq --argjson overrides "$overrides" '. * $overrides'
+  # 通常のマージ（mode: skip は上書きしない）
+  # 既存設定で mode: skip の場合、後続ルールで上書きされないように保護
+  local result="$defaults"
+  for key in repo_settings workflow_permissions actions_variables rulesets copilot_code_review; do
+    local current_mode
+    current_mode=$(echo "$result" | jq -r ".${key}.mode // \"\"")
+    local override_value
+    override_value=$(echo "$overrides" | jq ".${key} // null")
+
+    if [ "$override_value" != "null" ]; then
+      if [ "$current_mode" = "skip" ]; then
+        # mode: skip は保護（上書きしない）
+        continue
+      fi
+      result=$(echo "$result" | jq --argjson override "$override_value" ".${key} = (.${key} // {}) * \$override")
+    fi
+  done
+  echo "$result"
 }
 
 # =============================================================================
@@ -689,13 +705,30 @@ apply_rulesets() {
         bypass_actors: $bypass_actors
       }')
 
-    local result=$(echo "$payload" | gh_api -X POST "/repos/$owner/$repo/rulesets" --input - 2>&1) || {
-      log "    rulesets: creation error"
+    local result error_output
+    error_output=$(mktemp)
+    result=$(echo "$payload" | gh_api -X POST "/repos/$owner/$repo/rulesets" --input - 2>"$error_output") || {
+      local error_msg
+      error_msg=$(cat "$error_output")
+      rm -f "$error_output"
+      # 403 エラー（GitHub Pro が必要）の場合は警告のみ
+      if echo "$error_msg" | grep -q "HTTP 403"; then
+        log "    rulesets: スキップ（GitHub Pro が必要、またはプライベートリポジトリ）"
+        return 0
+      fi
+      log "    rulesets: creation error - $error_msg"
       return 1
     }
+    rm -f "$error_output"
 
-    local ruleset_id=$(echo "$result" | jq -r '.id')
-    log "    rulesets: 作成完了 (ID: $ruleset_id)"
+    # レスポンスが有効な JSON かつ id を含むか確認
+    local ruleset_id
+    if echo "$result" | jq -e '.id' > /dev/null 2>&1; then
+      ruleset_id=$(echo "$result" | jq -r '.id')
+      log "    rulesets: 作成完了 (ID: $ruleset_id)"
+    else
+      log "    rulesets: 作成完了（ID 取得失敗）"
+    fi
   else
     log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)"
   fi
