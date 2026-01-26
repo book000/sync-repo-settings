@@ -817,20 +817,6 @@ apply_rulesets() {
   else
     # 既存のルールセットがある場合は、mode: upsert なら更新
     if [ "$mode" = "upsert" ]; then
-      # ステータスチェックを検出
-      local status_check_settings=$(echo "$template" | jq '.rules.required_status_checks // {}')
-      local detection=$(echo "$status_check_settings" | jq -r '.detection // "auto"')
-
-      local status_checks="[]"
-      if [ "$detection" = "auto" ]; then
-        status_checks=$(detect_status_checks "$owner" "$repo" "$status_check_settings")
-      fi
-
-      if [ "$status_checks" = "[]" ]; then
-        log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)、ステータスチェック検出なし"
-        return
-      fi
-
       # 最初のルールセットを対象に更新（通常は master ルールセット）
       local ruleset_id=$(echo "$existing_rulesets" | jq -r '.[0].id')
       local ruleset_name=$(echo "$existing_rulesets" | jq -r '.[0].name')
@@ -842,6 +828,19 @@ apply_rulesets() {
         return
       }
 
+      # 変更を追跡するためのフラグと更新内容
+      local needs_update=false
+      local update_messages=()
+
+      # ステータスチェックを検出
+      local status_check_settings=$(echo "$template" | jq '.rules.required_status_checks // {}')
+      local detection=$(echo "$status_check_settings" | jq -r '.detection // "auto"')
+
+      local status_checks="[]"
+      if [ "$detection" = "auto" ]; then
+        status_checks=$(detect_status_checks "$owner" "$repo" "$status_check_settings")
+      fi
+
       # 既存の required_status_checks を取得
       local existing_status_checks
       existing_status_checks=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks] | flatten')
@@ -850,37 +849,121 @@ apply_rulesets() {
       local new_contexts=$(echo "$status_checks" | jq -r '[.[].context] | sort | join(",")')
       local existing_contexts=$(echo "$existing_status_checks" | jq -r '[.[].context] | sort | join(",")')
 
-      if [ "$new_contexts" = "$existing_contexts" ]; then
-        log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)、ステータスチェック変更なし"
+      local status_checks_changed=false
+      if [ "$status_checks" != "[]" ] && [ "$new_contexts" != "$existing_contexts" ]; then
+        status_checks_changed=true
+        needs_update=true
+        update_messages+=("ステータスチェック: $existing_contexts → $new_contexts")
+      fi
+
+      # copilot_code_review の設定を取得（boolean false を正しく扱うため has() でキーの存在を確認）
+      local copilot_settings=$(echo "$template" | jq '.rules.copilot_code_review // {}')
+      local copilot_review_on_push
+      local copilot_review_draft
+      if echo "$copilot_settings" | jq -e 'has("review_on_push")' > /dev/null 2>&1; then
+        copilot_review_on_push=$(echo "$copilot_settings" | jq '.review_on_push')
+      else
+        copilot_review_on_push="null"
+      fi
+      if echo "$copilot_settings" | jq -e 'has("review_draft_pull_requests")' > /dev/null 2>&1; then
+        copilot_review_draft=$(echo "$copilot_settings" | jq '.review_draft_pull_requests')
+      else
+        copilot_review_draft="null"
+      fi
+
+      # 既存の copilot_code_review ルールを取得
+      local existing_copilot
+      existing_copilot=$(echo "$existing_ruleset" | jq '.rules[] | select(.type == "copilot_code_review") | .parameters // {}')
+      local existing_review_on_push
+      local existing_review_draft
+      if [ -n "$existing_copilot" ] && echo "$existing_copilot" | jq -e 'has("review_on_push")' > /dev/null 2>&1; then
+        existing_review_on_push=$(echo "$existing_copilot" | jq '.review_on_push')
+      else
+        existing_review_on_push="null"
+      fi
+      if [ -n "$existing_copilot" ] && echo "$existing_copilot" | jq -e 'has("review_draft_pull_requests")' > /dev/null 2>&1; then
+        existing_review_draft=$(echo "$existing_copilot" | jq '.review_draft_pull_requests')
+      else
+        existing_review_draft="null"
+      fi
+
+      local copilot_changed=false
+      if [ "$copilot_review_on_push" != "null" ] || [ "$copilot_review_draft" != "null" ]; then
+        if [ "$copilot_review_on_push" != "$existing_review_on_push" ] || [ "$copilot_review_draft" != "$existing_review_draft" ]; then
+          copilot_changed=true
+          needs_update=true
+          update_messages+=("copilot_code_review: review_on_push=$existing_review_on_push→$copilot_review_on_push, review_draft=$existing_review_draft→$copilot_review_draft")
+        fi
+      fi
+
+      if [ "$needs_update" = false ]; then
+        log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)、変更なし"
         return
       fi
 
       if [ "$DRY_RUN" = true ]; then
-        log "    [DRY-RUN] rulesets (update): ステータスチェック: $existing_contexts → $new_contexts"
-        md_log_change "  - **rulesets** (update): ステータスチェック: $existing_contexts → $new_contexts"
+        for msg in "${update_messages[@]}"; do
+          log "    [DRY-RUN] rulesets [$ruleset_name]: $msg"
+          md_log_change "  - **rulesets** [$ruleset_name]: $msg"
+        done
         return
       fi
 
-      # ルールを更新（required_status_checks が存在しない場合は追加）
-      local has_status_check_rule
-      has_status_check_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks")] | length')
-
+      # ルールを更新
       local updated_rules
-      if [ "$has_status_check_rule" = "0" ]; then
-        # required_status_checks ルールが存在しない場合は追加
-        updated_rules=$(echo "$existing_ruleset" | jq --argjson new_checks "$status_checks" '
-          .rules + [{"type": "required_status_checks", "parameters": {"required_status_checks": $new_checks}}]
-        ')
-      else
-        # 既存のルールを更新
-        updated_rules=$(echo "$existing_ruleset" | jq --argjson new_checks "$status_checks" '
-          .rules | map(
-            if .type == "required_status_checks" then
-              .parameters.required_status_checks = $new_checks
-            else
-              .
-            end
-          )')
+      updated_rules=$(echo "$existing_ruleset" | jq '.rules')
+
+      # required_status_checks の更新
+      if [ "$status_checks_changed" = true ]; then
+        local has_status_check_rule
+        has_status_check_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks")] | length')
+
+        if [ "$has_status_check_rule" = "0" ]; then
+          # required_status_checks ルールが存在しない場合は追加
+          updated_rules=$(echo "$updated_rules" | jq --argjson new_checks "$status_checks" '
+            . + [{"type": "required_status_checks", "parameters": {"required_status_checks": $new_checks}}]
+          ')
+        else
+          # 既存のルールを更新
+          updated_rules=$(echo "$updated_rules" | jq --argjson new_checks "$status_checks" '
+            map(
+              if .type == "required_status_checks" then
+                .parameters.required_status_checks = $new_checks
+              else
+                .
+              end
+            )')
+        fi
+      fi
+
+      # copilot_code_review の更新
+      if [ "$copilot_changed" = true ]; then
+        local has_copilot_rule
+        has_copilot_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "copilot_code_review")] | length')
+
+        # 新しい copilot パラメータを構築
+        local new_copilot_params
+        new_copilot_params=$(jq -n \
+          --argjson review_on_push "$copilot_review_on_push" \
+          --argjson review_draft "$copilot_review_draft" \
+          '{review_on_push: $review_on_push, review_draft_pull_requests: $review_draft}')
+
+        if [ "$has_copilot_rule" = "0" ]; then
+          # copilot_code_review ルールが存在しない場合は追加
+          updated_rules=$(echo "$updated_rules" | jq --argjson params "$new_copilot_params" '
+            . + [{"type": "copilot_code_review", "parameters": $params}]
+          ')
+        else
+          # 既存のルールを更新
+          updated_rules=$(echo "$updated_rules" | jq --argjson params "$new_copilot_params" '
+            map(
+              if .type == "copilot_code_review" then
+                .parameters = $params
+              else
+                .
+              end
+            )')
+        fi
       fi
 
       local update_payload
@@ -896,7 +979,15 @@ apply_rulesets() {
       local error_output
       error_output=$(create_temp_file) || return
       if gh_api -X PUT "/repos/$owner/$repo/rulesets/$ruleset_id" --input - <<< "$update_payload" 2>"$error_output" > /dev/null; then
-        log "    rulesets [$ruleset_name]: ステータスチェック更新完了"
+        local success_msg=""
+        for msg in "${update_messages[@]}"; do
+          if [ -n "$success_msg" ]; then
+            success_msg="$success_msg, $msg"
+          else
+            success_msg="$msg"
+          fi
+        done
+        log "    rulesets [$ruleset_name]: 更新完了 ($success_msg)"
       else
         local error_msg
         error_msg=$(cat "$error_output")
@@ -922,8 +1013,19 @@ apply_copilot_code_review() {
   fi
 
   local values=$(echo "$settings" | jq '.values // {}')
-  local review_on_push=$(echo "$values" | jq -r '.review_on_push // true')
-  local review_draft=$(echo "$values" | jq -r '.review_draft_pull_requests // true')
+  # boolean false を正しく扱うため has() でキーの存在を確認
+  local review_on_push
+  local review_draft
+  if echo "$values" | jq -e 'has("review_on_push")' > /dev/null 2>&1; then
+    review_on_push=$(echo "$values" | jq '.review_on_push')
+  else
+    review_on_push="true"
+  fi
+  if echo "$values" | jq -e 'has("review_draft_pull_requests")' > /dev/null 2>&1; then
+    review_draft=$(echo "$values" | jq '.review_draft_pull_requests')
+  else
+    review_draft="true"
+  fi
 
   # 既存のルールセットを取得
   local rulesets
