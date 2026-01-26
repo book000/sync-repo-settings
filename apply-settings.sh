@@ -560,8 +560,8 @@ detect_status_checks() {
     return
   fi
 
-  local status_checks="[]"
-  local processed_workflows=""
+  local finished_checks="[]"
+  local all_checks="[]"
 
   # 各ワークフローファイルを読み取り
   while IFS= read -r wf; do
@@ -589,6 +589,18 @@ detect_status_checks() {
       continue
     fi
 
+    # pull_request_target で types: [closed] のみのワークフローは除外
+    # PR クローズ時のみ実行されるため、必須チェックとしては不適切
+    if echo "$content" | grep -qE '^\s*pull_request_target:' && \
+       ! echo "$content" | grep -qE '^\s*pull_request:'; then
+      # pull_request_target のみの場合、types を確認
+      # types に closed があり、opened/synchronize/reopened がない場合はスキップ
+      if echo "$content" | grep -qE '^\s+-\s*closed' && \
+         ! echo "$content" | grep -qE '^\s+-\s*(opened|synchronize|reopened)'; then
+        continue
+      fi
+    fi
+
     # ワークフロー名を取得
     local wf_name
     wf_name=$(echo "$content" | grep -E '^name:' | head -1 | sed 's/name: //' | tr -d '"' | tr -d "'")
@@ -605,12 +617,13 @@ detect_status_checks() {
     local workflow_runs
     workflow_runs=$(gh_api "/repos/$owner/$repo/actions/workflows/$workflow_file/runs?per_page=5" 2>/dev/null) || continue
 
-    # 最新の完了した実行を取得
+    # 最新のジョブが存在する実行を取得
+    # action_required は承認待ちでジョブがないため除外
     local run_id
-    run_id=$(echo "$workflow_runs" | jq -r '[.workflow_runs[] | select(.conclusion == "success" or .status == "completed")] | .[0].id // empty')
+    run_id=$(echo "$workflow_runs" | jq -r '[.workflow_runs[] | select(.conclusion == "success" or .conclusion == "failure" or .conclusion == "cancelled")] | .[0].id // empty')
 
     if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
-      # 完了した実行がない場合は最新の実行を使用
+      # ジョブが存在する実行がない場合は最新の実行を使用
       run_id=$(echo "$workflow_runs" | jq -r '.workflow_runs[0].id // empty')
     fi
 
@@ -646,19 +659,24 @@ detect_status_checks() {
       fi
     done <<< "$check_names"
 
-    # finished ジョブを優先
-    local selected_check="$first_check"
-    if [ "$prefer_finished" = "true" ] && [ -n "$finished_check" ]; then
-      selected_check="$finished_check"
+    # このワークフローからの選択を記録
+    if [ -n "$finished_check" ]; then
+      # finished ジョブがあれば finished_checks に追加
+      finished_checks=$(echo "$finished_checks" | jq --arg ctx "$finished_check" '. + [{"context": $ctx, "integration_id": 15368}]')
     fi
-
-    if [ -n "$selected_check" ]; then
-      # integration_id 15368 は GitHub Actions のアプリケーション ID
-      status_checks=$(echo "$status_checks" | jq --arg ctx "$selected_check" '. + [{"context": $ctx, "integration_id": 15368}]')
+    if [ -n "$first_check" ]; then
+      # 最初のジョブを all_checks に追加
+      all_checks=$(echo "$all_checks" | jq --arg ctx "$first_check" '. + [{"context": $ctx, "integration_id": 15368}]')
     fi
   done <<< "$workflows"
 
-  echo "$status_checks"
+  # prefer_finished が true で finished ジョブがあれば、finished ジョブのみを使用
+  # これにより、集約ジョブ（finished）があるリポジトリでは、他のワークフローのチェックは無視される
+  if [ "$prefer_finished" = "true" ] && [ "$(echo "$finished_checks" | jq 'length')" -gt 0 ]; then
+    echo "$finished_checks"
+  else
+    echo "$all_checks"
+  fi
 }
 
 # Rulesets を適用
