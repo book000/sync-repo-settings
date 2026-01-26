@@ -584,8 +584,10 @@ detect_status_checks() {
       continue
     fi
 
-    # paths 条件があるワークフローも含める
-    # do_not_enforce_on_create: true が設定されているため、チェックが実行されない PR でもマージ可能
+    # paths 条件があるワークフローは除外（特定ファイル変更時のみ実行されるため）
+    if echo "$content" | grep -qE '^\s+paths:'; then
+      continue
+    fi
 
     # ワークフロー名を取得
     local wf_name
