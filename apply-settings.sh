@@ -560,7 +560,6 @@ detect_status_checks() {
     return
   fi
 
-  local finished_checks="[]"
   local all_checks="[]"
 
   # 各ワークフローファイルを読み取り
@@ -662,24 +661,20 @@ detect_status_checks() {
       fi
     done <<< "$check_names"
 
-    # このワークフローからの選択を記録
-    if [ -n "$finished_check" ]; then
-      # finished ジョブがあれば finished_checks に追加
-      finished_checks=$(echo "$finished_checks" | jq --arg ctx "$finished_check" '. + [{"context": $ctx, "integration_id": 15368}]')
+    # このワークフローから1つのジョブを選択
+    # prefer_finished が true で finished ジョブがあれば finished を、なければ最初のジョブを選択
+    local selected_check="$first_check"
+    if [ "$prefer_finished" = "true" ] && [ -n "$finished_check" ]; then
+      selected_check="$finished_check"
     fi
-    if [ -n "$first_check" ]; then
-      # 最初のジョブを all_checks に追加
-      all_checks=$(echo "$all_checks" | jq --arg ctx "$first_check" '. + [{"context": $ctx, "integration_id": 15368}]')
+
+    if [ -n "$selected_check" ]; then
+      # integration_id 15368 は GitHub Actions のアプリケーション ID
+      all_checks=$(echo "$all_checks" | jq --arg ctx "$selected_check" '. + [{"context": $ctx, "integration_id": 15368}]')
     fi
   done <<< "$workflows"
 
-  # prefer_finished が true で finished ジョブがあれば、finished ジョブのみを使用
-  # これにより、集約ジョブ（finished）があるリポジトリでは、他のワークフローのチェックは無視される
-  if [ "$prefer_finished" = "true" ] && [ "$(echo "$finished_checks" | jq 'length')" -gt 0 ]; then
-    echo "$finished_checks"
-  else
-    echo "$all_checks"
-  fi
+  echo "$all_checks"
 }
 
 # Rulesets を適用
