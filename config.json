@@ -63,7 +63,7 @@
             "prefer_finished_jobs": true
           },
           "copilot_code_review": {
-            "review_on_push": true,
+            "review_on_push": false,
             "review_draft_pull_requests": true
           }
         },
