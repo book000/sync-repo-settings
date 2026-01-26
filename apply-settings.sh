@@ -538,6 +538,7 @@ apply_actions_variables() {
 }
 
 # ステータスチェックを自動検出
+# GitHub Actions の実際のワークフロー実行から check run 名を取得する
 detect_status_checks() {
   local owner="$1"
   local repo="$2"
@@ -546,78 +547,75 @@ detect_status_checks() {
   local exclude_patterns=$(echo "$settings" | jq -r '.exclude_patterns // [] | join("|")')
   local prefer_finished=$(echo "$settings" | jq -r '.prefer_finished_jobs // true')
 
-  local workflows=$(gh_api "/repos/$owner/$repo/contents/.github/workflows" 2>/dev/null | jq -r '.[].name' 2>/dev/null) || {
+  # PR イベントでトリガーされた最近のワークフロー実行を取得
+  local pr_runs
+  pr_runs=$(gh_api "/repos/$owner/$repo/actions/runs?event=pull_request&per_page=10" 2>/dev/null) || {
     echo "[]"
     return
   }
 
-  if [ -z "$workflows" ]; then
+  # 最新の成功した実行を探す
+  local run_id
+  run_id=$(echo "$pr_runs" | jq -r '[.workflow_runs[] | select(.conclusion == "success" or .status == "completed")] | .[0].id // empty')
+
+  if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+    # 成功した実行がない場合は最新の実行を使用
+    run_id=$(echo "$pr_runs" | jq -r '.workflow_runs[0].id // empty')
+  fi
+
+  if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+    # PR ワークフロー実行がない場合は空を返す
     echo "[]"
     return
   fi
 
+  # 実行のジョブからチェック名を取得
+  local jobs_response
+  jobs_response=$(gh_api "/repos/$owner/$repo/actions/runs/$run_id/jobs" 2>/dev/null) || {
+    echo "[]"
+    return
+  }
+
   local status_checks="[]"
 
-  # スペースを含むファイル名に対応するため while-read を使用
-  while IFS= read -r wf; do
-    [ -z "$wf" ] && continue
+  # ジョブ名（= チェック名）を取得
+  local check_names
+  check_names=$(echo "$jobs_response" | jq -r '.jobs[].name')
 
-    # ワークフローファイルの内容を取得（配列の場合はスキップ）
-    local file_response
-    file_response=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null) || continue
+  if [ -z "$check_names" ]; then
+    echo "[]"
+    return
+  fi
 
-    # レスポンスがオブジェクトで content フィールドを持つか確認
-    if ! echo "$file_response" | jq -e 'type == "object" and has("content")' > /dev/null 2>&1; then
-      continue
-    fi
+  local finished_check=""
+  local first_check=""
 
-    local content
-    content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
-
-    # PR トリガーがあるか確認（block-style と flow-style の両方に対応）
-    if ! echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
-      continue
-    fi
-
-    # ワークフロー名を取得
-    local wf_name
-    wf_name=$(echo "$content" | grep -E '^name:' | head -1 | sed 's/name: //' | tr -d '"' | tr -d "'")
+  while IFS= read -r check_name; do
+    [ -z "$check_name" ] && continue
 
     # 除外パターンに一致する場合はスキップ
-    if [ -n "$exclude_patterns" ] && echo "$wf_name" | grep -qiE "$exclude_patterns"; then
+    if [ -n "$exclude_patterns" ] && echo "$check_name" | grep -qiE "$exclude_patterns"; then
       continue
     fi
 
-    # ジョブ名を取得
-    local job_names
-    job_names=$(echo "$content" | awk '/^jobs:/{found=1; next} found && /^  [a-zA-Z0-9_-]+:/{gsub(/:$/, "", $1); print $1}')
-
-    local finished_job=""
-    local first_job=""
-
-    # スペースを含むジョブ名に対応するため while-read を使用
-    while IFS= read -r job; do
-      [ -z "$job" ] && continue
-      if [ -z "$first_job" ]; then
-        first_job="$job"
-      fi
-      if echo "$job" | grep -qE '^finished-'; then
-        finished_job="$job"
-      fi
-    done <<< "$job_names"
-
-    # finished ジョブを優先
-    local selected_job="$first_job"
-    if [ "$prefer_finished" = "true" ] && [ -n "$finished_job" ]; then
-      selected_job="$finished_job"
+    if [ -z "$first_check" ]; then
+      first_check="$check_name"
     fi
-
-    if [ -n "$selected_job" ]; then
-      local check_name="$wf_name / $selected_job"
-      # integration_id 15368 は GitHub Actions のアプリケーション ID
-      status_checks=$(echo "$status_checks" | jq --arg ctx "$check_name" '. + [{"context": $ctx, "integration_id": 15368}]')
+    if echo "$check_name" | grep -qiE 'finished'; then
+      finished_check="$check_name"
     fi
-  done <<< "$workflows"
+  done <<< "$check_names"
+
+  # finished ジョブを優先
+  local selected_check="$first_check"
+  if [ "$prefer_finished" = "true" ] && [ -n "$finished_check" ]; then
+    selected_check="$finished_check"
+  fi
+
+  if [ -n "$selected_check" ]; then
+    # integration_id 15368 は GitHub Actions のアプリケーション ID
+    status_checks=$(echo "$status_checks" | jq --arg ctx "$selected_check" '. + [{"context": $ctx, "integration_id": 15368}]')
+  fi
 
   echo "$status_checks"
 }
@@ -730,7 +728,87 @@ apply_rulesets() {
       log "    rulesets: 作成完了（ID 取得失敗）"
     fi
   else
-    log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)"
+    # 既存のルールセットがある場合は、mode: upsert なら更新
+    if [ "$mode" = "upsert" ]; then
+      # ステータスチェックを検出
+      local status_check_settings=$(echo "$template" | jq '.rules.required_status_checks // {}')
+      local detection=$(echo "$status_check_settings" | jq -r '.detection // "auto"')
+
+      local status_checks="[]"
+      if [ "$detection" = "auto" ]; then
+        status_checks=$(detect_status_checks "$owner" "$repo" "$status_check_settings")
+      fi
+
+      if [ "$status_checks" = "[]" ]; then
+        log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)、ステータスチェック検出なし"
+        return
+      fi
+
+      # 最初のルールセットを対象に更新（通常は master ルールセット）
+      local ruleset_id=$(echo "$existing_rulesets" | jq -r '.[0].id')
+      local ruleset_name=$(echo "$existing_rulesets" | jq -r '.[0].name')
+
+      # 既存のルールセットの詳細を取得
+      local existing_ruleset
+      existing_ruleset=$(gh_api "/repos/$owner/$repo/rulesets/$ruleset_id" 2>/dev/null) || {
+        log_verbose "rulesets: 既存ルールセット取得エラー"
+        return
+      }
+
+      # 既存の required_status_checks を取得
+      local existing_status_checks
+      existing_status_checks=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks] | flatten')
+
+      # 検出したステータスチェックと既存のものが同じか確認
+      local new_contexts=$(echo "$status_checks" | jq -r '[.[].context] | sort | join(",")')
+      local existing_contexts=$(echo "$existing_status_checks" | jq -r '[.[].context] | sort | join(",")')
+
+      if [ "$new_contexts" = "$existing_contexts" ]; then
+        log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)、ステータスチェック変更なし"
+        return
+      fi
+
+      if [ "$DRY_RUN" = true ]; then
+        log "    [DRY-RUN] rulesets (update): ステータスチェック: $existing_contexts → $new_contexts"
+        md_log_change "  - **rulesets** (update): ステータスチェック: $existing_contexts → $new_contexts"
+        return
+      fi
+
+      # ルールを更新
+      local updated_rules
+      updated_rules=$(echo "$existing_ruleset" | jq --argjson new_checks "$status_checks" '
+        .rules | map(
+          if .type == "required_status_checks" then
+            .parameters.required_status_checks = $new_checks
+          else
+            .
+          end
+        )')
+
+      local update_payload
+      update_payload=$(echo "$existing_ruleset" | jq --argjson rules "$updated_rules" '{
+        name: .name,
+        target: .target,
+        enforcement: .enforcement,
+        conditions: .conditions,
+        rules: $rules,
+        bypass_actors: .bypass_actors
+      }')
+
+      local error_output
+      error_output=$(mktemp)
+      if gh_api -X PUT "/repos/$owner/$repo/rulesets/$ruleset_id" --input - <<< "$update_payload" 2>"$error_output" > /dev/null; then
+        rm -f "$error_output"
+        log "    rulesets [$ruleset_name]: ステータスチェック更新完了"
+      else
+        local error_msg
+        error_msg=$(cat "$error_output")
+        rm -f "$error_output"
+        log "    rulesets: 更新エラー - $error_msg"
+      fi
+    else
+      log_verbose "rulesets: 既存ルールセットあり ($ruleset_count 件)"
+    fi
   fi
 }
 
