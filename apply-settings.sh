@@ -16,6 +16,28 @@ TARGET_REPO=""
 VERBOSE=false
 OUTPUT_FORMAT="text"  # text or markdown
 
+# 一時ファイル管理用配列
+TEMP_FILES=()
+
+# 終了時に一時ファイルをクリーンアップ
+cleanup_temp_files() {
+  for f in "${TEMP_FILES[@]}"; do
+    rm -f "$f" 2>/dev/null || true
+  done
+}
+trap cleanup_temp_files EXIT
+
+# 一時ファイルを作成し、管理配列に登録
+create_temp_file() {
+  local tmp
+  tmp=$(mktemp) || {
+    echo "Failed to create temp file" >&2
+    return 1
+  }
+  TEMP_FILES+=("$tmp")
+  echo "$tmp"
+}
+
 # =============================================================================
 # ヘルプ
 # =============================================================================
@@ -539,7 +561,8 @@ apply_actions_variables() {
 
 # ステータスチェックを自動検出
 # ワークフローファイルを読み取り、PR トリガーがあるワークフローを特定
-# paths 条件があるワークフローは除外し、各ワークフローの最新実行からジョブ名を取得
+# paths 条件があるワークフローは除外（ただし pull_request_target も存在する場合は除外しない）
+# 各ワークフローから1つのジョブを選択（prefer_finished_jobs が true なら finished ジョブを優先）
 detect_status_checks() {
   local owner="$1"
   local repo="$2"
@@ -615,9 +638,16 @@ detect_status_checks() {
     # ワークフロー ID を取得（ファイル名から）
     local workflow_file="$wf"
 
+    # ワークフローのトリガーに応じてイベントフィルタを決定
+    # pull_request_target がある場合はそちらを優先（paths 条件に関係なく実行されるため）
+    local event_filter="pull_request"
+    if echo "$content" | grep -qE '^\s*pull_request_target:'; then
+      event_filter="pull_request_target"
+    fi
+
     # このワークフローの最新実行を取得
     local workflow_runs
-    workflow_runs=$(gh_api "/repos/$owner/$repo/actions/workflows/$workflow_file/runs?per_page=5" 2>/dev/null) || continue
+    workflow_runs=$(gh_api "/repos/$owner/$repo/actions/workflows/$workflow_file/runs?event=$event_filter&per_page=5" 2>/dev/null) || continue
 
     # 最新のジョブが存在する実行を取得
     # action_required は承認待ちでジョブがないため除外
@@ -656,7 +686,8 @@ detect_status_checks() {
       if [ -z "$first_check" ]; then
         first_check="$check_name"
       fi
-      if echo "$check_name" | grep -qiE 'finished'; then
+      # finished ジョブの検出: "finished-xxx", "xxx finished", "Check finished xxx" などのパターン
+      if echo "$check_name" | grep -qiE '(^finished[-: ]|[-: ]finished$|[-: ]finished[-: ])'; then
         finished_check="$check_name"
       fi
     done <<< "$check_names"
@@ -761,20 +792,19 @@ apply_rulesets() {
       }')
 
     local result error_output
-    error_output=$(mktemp)
+    error_output=$(create_temp_file) || return 1
     result=$(echo "$payload" | gh_api -X POST "/repos/$owner/$repo/rulesets" --input - 2>"$error_output") || {
       local error_msg
       error_msg=$(cat "$error_output")
-      rm -f "$error_output"
       # 403 エラー（GitHub Pro が必要）の場合は警告のみ
-      if echo "$error_msg" | grep -q "HTTP 403"; then
+      # gh api はエラー時に "HTTP 403" を stderr に出力する
+      if echo "$error_msg" | grep -qE 'HTTP 403|403 Forbidden'; then
         log "    rulesets: スキップ（GitHub Pro が必要、またはプライベートリポジトリ）"
         return 0
       fi
       log "    rulesets: creation error - $error_msg"
       return 1
     }
-    rm -f "$error_output"
 
     # レスポンスが有効な JSON かつ id を含むか確認
     local ruleset_id
@@ -831,16 +861,27 @@ apply_rulesets() {
         return
       fi
 
-      # ルールを更新
+      # ルールを更新（required_status_checks が存在しない場合は追加）
+      local has_status_check_rule
+      has_status_check_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks")] | length')
+
       local updated_rules
-      updated_rules=$(echo "$existing_ruleset" | jq --argjson new_checks "$status_checks" '
-        .rules | map(
-          if .type == "required_status_checks" then
-            .parameters.required_status_checks = $new_checks
-          else
-            .
-          end
-        )')
+      if [ "$has_status_check_rule" = "0" ]; then
+        # required_status_checks ルールが存在しない場合は追加
+        updated_rules=$(echo "$existing_ruleset" | jq --argjson new_checks "$status_checks" '
+          .rules + [{"type": "required_status_checks", "parameters": {"required_status_checks": $new_checks}}]
+        ')
+      else
+        # 既存のルールを更新
+        updated_rules=$(echo "$existing_ruleset" | jq --argjson new_checks "$status_checks" '
+          .rules | map(
+            if .type == "required_status_checks" then
+              .parameters.required_status_checks = $new_checks
+            else
+              .
+            end
+          )')
+      fi
 
       local update_payload
       update_payload=$(echo "$existing_ruleset" | jq --argjson rules "$updated_rules" '{
@@ -853,14 +894,12 @@ apply_rulesets() {
       }')
 
       local error_output
-      error_output=$(mktemp)
+      error_output=$(create_temp_file) || return
       if gh_api -X PUT "/repos/$owner/$repo/rulesets/$ruleset_id" --input - <<< "$update_payload" 2>"$error_output" > /dev/null; then
-        rm -f "$error_output"
         log "    rulesets [$ruleset_name]: ステータスチェック更新完了"
       else
         local error_msg
         error_msg=$(cat "$error_output")
-        rm -f "$error_output"
         log "    rulesets: 更新エラー - $error_msg"
       fi
     else
