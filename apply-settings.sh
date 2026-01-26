@@ -538,7 +538,8 @@ apply_actions_variables() {
 }
 
 # ステータスチェックを自動検出
-# GitHub Actions の実際のワークフロー実行から check run 名を取得する
+# ワークフローファイルを読み取り、PR トリガーがあるワークフローを特定
+# paths 条件があるワークフローは除外し、各ワークフローの最新実行からジョブ名を取得
 detect_status_checks() {
   local owner="$1"
   local repo="$2"
@@ -547,75 +548,113 @@ detect_status_checks() {
   local exclude_patterns=$(echo "$settings" | jq -r '.exclude_patterns // [] | join("|")')
   local prefer_finished=$(echo "$settings" | jq -r '.prefer_finished_jobs // true')
 
-  # PR イベントでトリガーされた最近のワークフロー実行を取得
-  local pr_runs
-  pr_runs=$(gh_api "/repos/$owner/$repo/actions/runs?event=pull_request&per_page=10" 2>/dev/null) || {
+  # ワークフローファイル一覧を取得
+  local workflows
+  workflows=$(gh_api "/repos/$owner/$repo/contents/.github/workflows" 2>/dev/null | jq -r '.[].name' 2>/dev/null) || {
     echo "[]"
     return
   }
 
-  # 最新の成功した実行を探す
-  local run_id
-  run_id=$(echo "$pr_runs" | jq -r '[.workflow_runs[] | select(.conclusion == "success" or .status == "completed")] | .[0].id // empty')
-
-  if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
-    # 成功した実行がない場合は最新の実行を使用
-    run_id=$(echo "$pr_runs" | jq -r '.workflow_runs[0].id // empty')
-  fi
-
-  if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
-    # PR ワークフロー実行がない場合は空を返す
+  if [ -z "$workflows" ]; then
     echo "[]"
     return
   fi
-
-  # 実行のジョブからチェック名を取得
-  local jobs_response
-  jobs_response=$(gh_api "/repos/$owner/$repo/actions/runs/$run_id/jobs" 2>/dev/null) || {
-    echo "[]"
-    return
-  }
 
   local status_checks="[]"
+  local processed_workflows=""
 
-  # ジョブ名（= チェック名）を取得
-  local check_names
-  check_names=$(echo "$jobs_response" | jq -r '.jobs[].name')
+  # 各ワークフローファイルを読み取り
+  while IFS= read -r wf; do
+    [ -z "$wf" ] && continue
 
-  if [ -z "$check_names" ]; then
-    echo "[]"
-    return
-  fi
+    # ワークフローファイルの内容を取得
+    local file_response
+    file_response=$(gh_api "/repos/$owner/$repo/contents/.github/workflows/$wf" 2>/dev/null) || continue
 
-  local finished_check=""
-  local first_check=""
-
-  while IFS= read -r check_name; do
-    [ -z "$check_name" ] && continue
-
-    # 除外パターンに一致する場合はスキップ
-    if [ -n "$exclude_patterns" ] && echo "$check_name" | grep -qiE "$exclude_patterns"; then
+    # レスポンスがオブジェクトで content フィールドを持つか確認
+    if ! echo "$file_response" | jq -e 'type == "object" and has("content")' > /dev/null 2>&1; then
       continue
     fi
 
-    if [ -z "$first_check" ]; then
-      first_check="$check_name"
-    fi
-    if echo "$check_name" | grep -qiE 'finished'; then
-      finished_check="$check_name"
-    fi
-  done <<< "$check_names"
+    local content
+    content=$(echo "$file_response" | jq -r '.content' | decode_base64 2>/dev/null) || continue
 
-  # finished ジョブを優先
-  local selected_check="$first_check"
-  if [ "$prefer_finished" = "true" ] && [ -n "$finished_check" ]; then
-    selected_check="$finished_check"
-  fi
+    # PR トリガーがあるか確認（block-style と flow-style の両方に対応）
+    if ! echo "$content" | grep -qE '(^\s*(pull_request|pull_request_target):)|(^\s*on:\s*\[.*\bpull_request(_target)?\b.*\])'; then
+      continue
+    fi
 
-  if [ -n "$selected_check" ]; then
-    # integration_id 15368 は GitHub Actions のアプリケーション ID
-    status_checks=$(echo "$status_checks" | jq --arg ctx "$selected_check" '. + [{"context": $ctx, "integration_id": 15368}]')
-  fi
+    # paths 条件があるワークフローも含める
+    # do_not_enforce_on_create: true が設定されているため、チェックが実行されない PR でもマージ可能
+
+    # ワークフロー名を取得
+    local wf_name
+    wf_name=$(echo "$content" | grep -E '^name:' | head -1 | sed 's/name: //' | tr -d '"' | tr -d "'")
+
+    # 除外パターンに一致する場合はスキップ
+    if [ -n "$exclude_patterns" ] && echo "$wf_name" | grep -qiE "$exclude_patterns"; then
+      continue
+    fi
+
+    # ワークフロー ID を取得（ファイル名から）
+    local workflow_file="$wf"
+
+    # このワークフローの最新実行を取得
+    local workflow_runs
+    workflow_runs=$(gh_api "/repos/$owner/$repo/actions/workflows/$workflow_file/runs?per_page=5" 2>/dev/null) || continue
+
+    # 最新の完了した実行を取得
+    local run_id
+    run_id=$(echo "$workflow_runs" | jq -r '[.workflow_runs[] | select(.conclusion == "success" or .status == "completed")] | .[0].id // empty')
+
+    if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+      # 完了した実行がない場合は最新の実行を使用
+      run_id=$(echo "$workflow_runs" | jq -r '.workflow_runs[0].id // empty')
+    fi
+
+    if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+      continue
+    fi
+
+    # 実行のジョブからチェック名を取得
+    local jobs_response
+    jobs_response=$(gh_api "/repos/$owner/$repo/actions/runs/$run_id/jobs" 2>/dev/null) || continue
+
+    local check_names
+    check_names=$(echo "$jobs_response" | jq -r '.jobs[].name')
+
+    [ -z "$check_names" ] && continue
+
+    local finished_check=""
+    local first_check=""
+
+    while IFS= read -r check_name; do
+      [ -z "$check_name" ] && continue
+
+      # ジョブ名が除外パターンに一致する場合はスキップ
+      if [ -n "$exclude_patterns" ] && echo "$check_name" | grep -qiE "$exclude_patterns"; then
+        continue
+      fi
+
+      if [ -z "$first_check" ]; then
+        first_check="$check_name"
+      fi
+      if echo "$check_name" | grep -qiE 'finished'; then
+        finished_check="$check_name"
+      fi
+    done <<< "$check_names"
+
+    # finished ジョブを優先
+    local selected_check="$first_check"
+    if [ "$prefer_finished" = "true" ] && [ -n "$finished_check" ]; then
+      selected_check="$finished_check"
+    fi
+
+    if [ -n "$selected_check" ]; then
+      # integration_id 15368 は GitHub Actions のアプリケーション ID
+      status_checks=$(echo "$status_checks" | jq --arg ctx "$selected_check" '. + [{"context": $ctx, "integration_id": 15368}]')
+    fi
+  done <<< "$workflows"
 
   echo "$status_checks"
 }
