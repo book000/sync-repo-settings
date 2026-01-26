@@ -585,7 +585,10 @@ detect_status_checks() {
     fi
 
     # paths 条件があるワークフローは除外（特定ファイル変更時のみ実行されるため）
-    if echo "$content" | grep -qE '^\s+paths:'; then
+    # ただし、pull_request_target も存在する場合は除外しない
+    # （pull_request_target は paths 条件に関係なく実行される）
+    if echo "$content" | grep -qE '^\s+paths:' && \
+       ! echo "$content" | grep -qE '^\s*pull_request_target:'; then
       continue
     fi
 
