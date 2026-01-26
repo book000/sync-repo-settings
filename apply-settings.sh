@@ -941,12 +941,15 @@ apply_rulesets() {
         local has_copilot_rule
         has_copilot_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "copilot_code_review")] | length')
 
-        # 新しい copilot パラメータを構築
+        # 新しい copilot パラメータを構築（null 値は含めない）
         local new_copilot_params
         new_copilot_params=$(jq -n \
           --argjson review_on_push "$copilot_review_on_push" \
-          --argjson review_draft "$copilot_review_draft" \
-          '{review_on_push: $review_on_push, review_draft_pull_requests: $review_draft}')
+          --argjson review_draft "$copilot_review_draft" '
+          ($review_on_push | if . == null then {} else {review_on_push: .} end) as $on
+          | ($review_draft | if . == null then {} else {review_draft_pull_requests: .} end) as $draft
+          | $on + $draft
+          ')
 
         if [ "$has_copilot_rule" = "0" ]; then
           # copilot_code_review ルールが存在しない場合は追加
