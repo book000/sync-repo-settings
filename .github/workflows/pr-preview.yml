@@ -22,9 +22,24 @@ jobs:
         id: dry-run
         continue-on-error: true
         env:
+          # 注意: GITHUB_TOKEN は単一リポジトリにしかアクセスできないため、
+          # 複数リポジトリの設定を読み取る apply-settings.sh では使用できない
+          # PERSONAL_ACCESS_TOKEN を使用する必要がある
+          # ただし、フォークからの PR では PERSONAL_ACCESS_TOKEN にアクセスできないため、
+          # エラーメッセージを表示して終了する
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         run: |
           chmod +x ./apply-settings.sh
+
+          # フォークからの PR の場合、PAT が空になる
+          if [ -z "$GH_TOKEN" ]; then
+            echo "## フォークからの PR では dry-run を実行できません" > summary.txt
+            echo "" >> summary.txt
+            echo "セキュリティ上の理由から、フォークからの PR では他のリポジトリの情報にアクセスできません。" >> summary.txt
+            echo "dry-run を実行するには、base リポジトリに直接 PR を作成してください。" >> summary.txt
+            echo "" > details.txt
+            exit 0
+          fi
 
           # dry-run を実行（stdout: Markdown サマリー、stderr: 詳細ログ）
           set +e +o pipefail
@@ -39,50 +54,22 @@ jobs:
             echo "終了コード: $exit_code" >> summary.txt
           fi
 
-          # サマリーを出力として設定
-          {
-            echo 'summary<<EOF'
-            cat summary.txt
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
-          # 詳細ログを出力として設定
-          {
-            echo 'details<<EOF'
-            cat details.txt
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Find existing comment
-        uses: peter-evans/find-comment@v3
-        id: find-comment
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
         with:
-          issue-number: ${{ github.event.pull_request.number }}
-          comment-author: 'github-actions[bot]'
-          body-includes: '<!-- sync-repo-settings-preview -->'
+          name: pr-preview-results
+          path: |
+            summary.txt
+            details.txt
+          retention-days: 1
 
-      - name: Create or update comment
-        uses: peter-evans/create-or-update-comment@v4
+      - name: Save PR number
+        run: echo ${{ github.event.pull_request.number }} > pr_number.txt
+
+      - name: Upload PR number
+        uses: actions/upload-artifact@v4
         with:
-          comment-id: ${{ steps.find-comment.outputs.comment-id }}
-          issue-number: ${{ github.event.pull_request.number }}
-          edit-mode: replace
-          body: |
-            <!-- sync-repo-settings-preview -->
-            # Dry-Run Preview
-
-            この PR がマージされた場合に適用される設定の一覧です。
-
-            ${{ steps.dry-run.outputs.summary }}
-
-            <details>
-            <summary>詳細ログを表示</summary>
-
-            ```
-            ${{ steps.dry-run.outputs.details }}
-            ```
-
-            </details>
-
-            ---
-            *このコメントは PR の変更に応じて自動更新されます。*
+          name: pr-number
+          path: pr_number.txt
+          retention-days: 1

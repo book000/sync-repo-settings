@@ -1,0 +1,82 @@
+name: PR Preview Comment
+
+on:
+  workflow_run:
+    workflows: ["PR Preview"]
+    types:
+      - completed
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    # workflow_run は完了を待つため、失敗した場合もコメントを投稿
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Read PR number
+        id: pr
+        run: |
+          PR_NUMBER=$(cat pr-number/pr_number.txt)
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Read results
+        id: results
+        run: |
+          if [ -f pr-preview-results/summary.txt ]; then
+            {
+              echo 'summary<<EOF'
+              cat pr-preview-results/summary.txt
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -f pr-preview-results/details.txt ]; then
+            {
+              echo 'details<<EOF'
+              cat pr-preview-results/details.txt
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Find existing comment
+        uses: peter-evans/find-comment@v3
+        id: find-comment
+        with:
+          issue-number: ${{ steps.pr.outputs.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '<!-- sync-repo-settings-preview -->'
+
+      - name: Create or update comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ steps.pr.outputs.number }}
+          edit-mode: replace
+          body: |
+            <!-- sync-repo-settings-preview -->
+            # Dry-Run Preview
+
+            この PR がマージされた場合に適用される設定の一覧です。
+
+            ${{ steps.results.outputs.summary }}
+
+            <details>
+            <summary>詳細ログを表示</summary>
+
+            ```
+            ${{ steps.results.outputs.details }}
+            ```
+
+            </details>
+
+            ---
+            *このコメントは PR の変更に応じて自動更新されます。*
