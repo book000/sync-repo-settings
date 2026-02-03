@@ -8,17 +8,17 @@ on:
       - 'config.json'
       - 'apply-settings.sh'
   pull_request_target:
-    types: [labeled]
     branches:
       - master
+    paths:
+      - 'config.json'
+      - 'apply-settings.sh'
 
 jobs:
   preview:
     runs-on: ubuntu-latest
-    # pull_request（同一リポジトリ）または approved-for-dry-run ラベル付き
-    if: |
-      (github.event_name == 'pull_request') ||
-      (github.event_name == 'pull_request_target' && contains(github.event.pull_request.labels.*.name, 'approved-for-dry-run'))
+    # pull_request_target（フォーク）の場合は Environment で承認が必要
+    environment: ${{ github.event_name == 'pull_request_target' && 'pr-preview' || null }}
     permissions:
       contents: read
     steps:
@@ -51,11 +51,11 @@ jobs:
             echo "" >> summary.txt
             echo "write 権限を持つコラボレーターが以下の手順で実行を承認できます：" >> summary.txt
             echo "" >> summary.txt
-            echo "1. PR のコード内容を確認" >> summary.txt
-            echo "2. 問題がなければ、\`approved-for-dry-run\` ラベルを追加" >> summary.txt
-            echo "3. ラベル追加後、自動的に dry-run が実行されます" >> summary.txt
+            echo "1. GitHub Actions の [Workflows](https://github.com/\${{ github.repository }}/actions/workflows/pr-preview.yml) を開く" >> summary.txt
+            echo "2. 実行待ちのワークフローを確認" >> summary.txt
+            echo "3. PR のコード内容を確認した上で、「Review deployments」をクリックして承認" >> summary.txt
             echo "" >> summary.txt
-            echo "**注意**: ラベルを追加すると、PR のコード（apply-settings.sh を含む）が実行されます。" >> summary.txt
+            echo "**注意**: 承認すると、PR のコード（apply-settings.sh を含む）が実行されます。" >> summary.txt
             echo "" > details.txt
             exit 0
           fi
