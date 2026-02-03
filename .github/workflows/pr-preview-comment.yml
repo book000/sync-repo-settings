@@ -14,6 +14,7 @@ jobs:
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion != 'cancelled'
     permissions:
+      actions: read
       pull-requests: write
     steps:
       - name: Download artifacts
@@ -25,7 +26,15 @@ jobs:
       - name: Read PR number
         id: pr
         run: |
-          PR_NUMBER=$(cat pr-number/pr_number.txt)
+          if [ ! -f pr-number/pr_number.txt ]; then
+            echo "Error: PR number file not found"
+            exit 1
+          fi
+          PR_NUMBER="$(cat pr-number/pr_number.txt)"
+          if [ -z "$PR_NUMBER" ]; then
+            echo "Error: PR number is empty"
+            exit 1
+          fi
           echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Read results
