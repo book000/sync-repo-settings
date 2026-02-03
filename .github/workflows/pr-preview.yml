@@ -64,10 +64,12 @@ jobs:
           retention-days: 1
 
       - name: Save PR number
+        if: always()
         run: echo ${{ github.event.pull_request.number }} > pr_number.txt
 
       - name: Upload PR number
         uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: pr-number
           path: pr_number.txt

@@ -26,15 +26,32 @@ jobs:
       - name: Read PR number
         id: pr
         run: |
-          if [ ! -f pr-number/pr_number.txt ]; then
-            echo "Error: PR number file not found"
+          set -euo pipefail
+
+          # PR 番号ファイルのパスを定義
+          PR_NUMBER_FILE="pr-number/pr_number.txt"
+
+          # PR 番号ファイルの存在と中身をチェック
+          if [ ! -s "$PR_NUMBER_FILE" ]; then
+            echo "Error: PR number file '$PR_NUMBER_FILE' not found or is empty." >&2
             exit 1
           fi
-          PR_NUMBER="$(cat pr-number/pr_number.txt)"
+
+          # PR 番号を読み取り
+          PR_NUMBER="$(cat "$PR_NUMBER_FILE")"
+
+          # PR 番号が空でないか確認
           if [ -z "$PR_NUMBER" ]; then
-            echo "Error: PR number is empty"
+            echo "Error: PR number is empty." >&2
             exit 1
           fi
+
+          # PR 番号が数値であることを確認
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "Error: Invalid PR number '$PR_NUMBER'." >&2
+            exit 1
+          fi
+
           echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Read results
