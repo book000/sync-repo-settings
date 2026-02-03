@@ -7,15 +7,26 @@ on:
     paths:
       - 'config.json'
       - 'apply-settings.sh'
+  pull_request_target:
+    types: [labeled]
+    branches:
+      - master
 
 jobs:
   preview:
     runs-on: ubuntu-latest
+    # pull_request（同一リポジトリ）または approved-for-dry-run ラベル付き
+    if: |
+      (github.event_name == 'pull_request') ||
+      (github.event_name == 'pull_request_target' && contains(github.event.pull_request.labels.*.name, 'approved-for-dry-run'))
     permissions:
       contents: read
     steps:
-      - name: Checkout
+      - name: Checkout PR code
         uses: actions/checkout@v4
+        with:
+          # pull_request_target の場合は PR の HEAD をチェックアウト
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.ref }}
 
       - name: Run dry-run
         id: dry-run
@@ -35,7 +46,16 @@ jobs:
             echo "## フォークからの PR では dry-run を実行できません" > summary.txt
             echo "" >> summary.txt
             echo "セキュリティ上の理由から、フォークからの PR では他のリポジトリの情報にアクセスできません。" >> summary.txt
-            echo "dry-run を実行するには、base リポジトリに直接 PR を作成してください。" >> summary.txt
+            echo "" >> summary.txt
+            echo "### 実行する方法" >> summary.txt
+            echo "" >> summary.txt
+            echo "write 権限を持つコラボレーターが以下の手順で実行を承認できます：" >> summary.txt
+            echo "" >> summary.txt
+            echo "1. PR のコード内容を確認" >> summary.txt
+            echo "2. 問題がなければ、\`approved-for-dry-run\` ラベルを追加" >> summary.txt
+            echo "3. ラベル追加後、自動的に dry-run が実行されます" >> summary.txt
+            echo "" >> summary.txt
+            echo "**注意**: ラベルを追加すると、PR のコード（apply-settings.sh を含む）が実行されます。" >> summary.txt
             echo "" > details.txt
             exit 0
           fi
