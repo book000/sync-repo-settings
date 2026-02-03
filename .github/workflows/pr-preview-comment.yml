@@ -11,7 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     # workflow_run は完了を待つため、失敗した場合もコメントを投稿
     if: >
-      github.event.workflow_run.event == 'pull_request' &&
+      (github.event.workflow_run.event == 'pull_request' ||
+       github.event.workflow_run.event == 'pull_request_target') &&
       github.event.workflow_run.conclusion != 'cancelled'
     permissions:
       actions: read
@@ -19,6 +20,7 @@ jobs:
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
@@ -57,10 +59,20 @@ jobs:
       - name: Read results
         id: results
         run: |
+          set -euo pipefail
+
           if [ -f pr-preview-results/summary.txt ]; then
             {
               echo 'summary<<EOF'
               cat pr-preview-results/summary.txt
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'summary<<EOF'
+              echo '## 結果の取得に失敗しました'
+              echo ''
+              echo 'dry-run の結果が artifact に保存されていません。'
               echo 'EOF'
             } >> "$GITHUB_OUTPUT"
           fi
@@ -69,6 +81,12 @@ jobs:
             {
               echo 'details<<EOF'
               cat pr-preview-results/details.txt
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo 'details<<EOF'
+              echo 'ログがありません。'
               echo 'EOF'
             } >> "$GITHUB_OUTPUT"
           fi
