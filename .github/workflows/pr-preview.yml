@@ -1,22 +1,31 @@
 name: PR Preview
 
 on:
-  pull_request:
-    branches:
-      - master
-    paths:
-      - 'config.json'
-      - 'apply-settings.sh'
   pull_request_target:
     branches:
       - master
-    paths:
-      - 'config.json'
-      - 'apply-settings.sh'
 
 jobs:
+  post-approval-request:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request_target'
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post approval request comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ## Environment 承認待ち
+
+            この PR の dry-run を実行するには、Environment `pr-preview` の承認が必要です。
+
+            [Actions run を確認して承認してください](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}?pr=${{ github.event.pull_request.number }})
+
   preview:
     runs-on: ubuntu-latest
+    needs: post-approval-request
     # pull_request_target（フォーク）の場合は Environment で承認が必要
     environment: ${{ github.event_name == 'pull_request_target' && 'pr-preview' || null }}
     permissions:
@@ -41,31 +50,13 @@ jobs:
         run: |
           chmod +x ./apply-settings.sh
 
-          # PAT が空の場合のエラーハンドリング
+          # PAT が空の場合のエラー（通常は発生しない）
           if [ -z "$GH_TOKEN" ]; then
-            if [ "$GITHUB_EVENT_NAME" = "pull_request_target" ]; then
-              # フォークからの PR の場合
-              echo "## フォークからの PR では dry-run を実行できません" > summary.txt
-              echo "" >> summary.txt
-              echo "セキュリティ上の理由から、フォークからの PR では他のリポジトリの情報にアクセスできません。" >> summary.txt
-              echo "" >> summary.txt
-              echo "### 実行する方法" >> summary.txt
-              echo "" >> summary.txt
-              echo "write 権限を持つコラボレーターが以下の手順で実行を承認できます：" >> summary.txt
-              echo "" >> summary.txt
-              echo "1. GitHub Actions の [Workflows](https://github.com/$GITHUB_REPOSITORY/actions/workflows/pr-preview.yml) を開く" >> summary.txt
-              echo "2. 実行待ちのワークフローを確認" >> summary.txt
-              echo "3. PR のコード内容を確認した上で、「Review deployments」をクリックして承認" >> summary.txt
-              echo "" >> summary.txt
-              echo "**注意**: 承認すると、PR のコード（apply-settings.sh を含む）が実行されます。" >> summary.txt
-            else
-              # 同一リポジトリからの PR の場合
-              echo "## PERSONAL_ACCESS_TOKEN が設定されていません" > summary.txt
-              echo "" >> summary.txt
-              echo "dry-run を実行するには、Repository Secrets に PERSONAL_ACCESS_TOKEN を設定してください。" >> summary.txt
-            fi
+            echo "## PERSONAL_ACCESS_TOKEN が設定されていません" > summary.txt
+            echo "" >> summary.txt
+            echo "Repository Secrets に PERSONAL_ACCESS_TOKEN を設定してください。" >> summary.txt
             echo "" > details.txt
-            exit 0
+            exit 1
           fi
 
           # dry-run を実行（stdout: Markdown サマリー、stderr: 詳細ログ）

@@ -11,7 +11,7 @@ BEGIN {
   in_types=0; types_i=-1
   found_pr=""; found_types=0
   has_opened=0; has_reopened=0; has_sync=0
-  has_filters=0
+  has_path_filters=0
   always_runs=0  # どれか一つのトリガーが常時実行であれば 1
   current_trigger=""  # 現在処理中のトリガー種別
 }
@@ -41,8 +41,8 @@ BEGIN {
   if (in_on && i <= on_i) {
     # on: ブロック終了時に、最後のトリガーブロックを評価
     if (in_pr) {
-      if (current_trigger == "pull_request" && has_filters) {
-        # pull_request でフィルターがある場合は常時実行ではない
+      if (current_trigger == "pull_request" && has_path_filters) {
+        # pull_request で paths フィルターがある場合は常時実行ではない
       } else if (!found_types || (has_opened && has_reopened && has_sync)) {
         always_runs = 1
       }
@@ -55,8 +55,8 @@ BEGIN {
   if (line ~ /^[ \t]*pull_request_target[ \t]*:/) {
     # 前回のトリガーブロックの判定を行う
     if (in_pr) {
-      if (current_trigger == "pull_request" && has_filters) {
-        # pull_request でフィルターがある場合は常時実行ではない
+      if (current_trigger == "pull_request" && has_path_filters) {
+        # pull_request で paths フィルターがある場合は常時実行ではない
       } else if (!found_types || (has_opened && has_reopened && has_sync)) {
         always_runs = 1
       }
@@ -64,7 +64,7 @@ BEGIN {
     # 新しいトリガーブロック開始：変数をリセット
     found_pr="pull_request_target"; current_trigger="pull_request_target"
     in_pr=1; pr_i=i; in_types=0
-    found_types=0; has_opened=0; has_reopened=0; has_sync=0; has_filters=0
+    found_types=0; has_opened=0; has_reopened=0; has_sync=0; has_path_filters=0
     if (line ~ /types[ \t]*:/) found_types=1
     if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
     if (line ~ /(^|[^a-z_])reopened([^a-z_]|$)/) has_reopened=1
@@ -76,8 +76,8 @@ BEGIN {
   if (line ~ /^[ \t]*pull_request[ \t]*:/ && line !~ /_target/) {
     # 前回のトリガーブロックの判定を行う
     if (in_pr) {
-      if (current_trigger == "pull_request" && has_filters) {
-        # pull_request でフィルターがある場合は常時実行ではない
+      if (current_trigger == "pull_request" && has_path_filters) {
+        # pull_request で paths フィルターがある場合は常時実行ではない
       } else if (!found_types || (has_opened && has_reopened && has_sync)) {
         always_runs = 1
       }
@@ -85,20 +85,20 @@ BEGIN {
     # 新しいトリガーブロック開始：変数をリセット
     found_pr="pull_request"; current_trigger="pull_request"
     in_pr=1; pr_i=i; in_types=0
-    found_types=0; has_opened=0; has_reopened=0; has_sync=0; has_filters=0
+    found_types=0; has_opened=0; has_reopened=0; has_sync=0; has_path_filters=0
     if (line ~ /types[ \t]*:/) found_types=1
     if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
     if (line ~ /(^|[^a-z_])reopened([^a-z_]|$)/) has_reopened=1
     if (line ~ /(^|[^a-z_])synchronize([^a-z_]|$)/) has_sync=1
-    if (line ~ /(paths|paths-ignore|branches|branches-ignore)[ \t]*:/) has_filters=1
+    if (line ~ /(paths|paths-ignore)[ \t]*:/) has_path_filters=1
     next
   }
 
   # pull_request / pull_request_target ブロック終了
   if (in_pr && i <= pr_i) {
     # ブロック終了時に判定を行う
-    if (current_trigger == "pull_request" && has_filters) {
-      # pull_request でフィルターがある場合は常時実行ではない
+    if (current_trigger == "pull_request" && has_path_filters) {
+      # pull_request で paths フィルターがある場合は常時実行ではない
     } else if (!found_types || (has_opened && has_reopened && has_sync)) {
       always_runs = 1
     }
@@ -106,9 +106,9 @@ BEGIN {
   }
   if (!in_pr) next
 
-  # paths/branches フィルター判定
-  if (line ~ /^[ \t]*(paths|paths-ignore|branches|branches-ignore)[ \t]*:/) {
-    has_filters=1
+  # paths フィルター判定（branches/branches-ignore は除外判定に使わない）
+  if (line ~ /^[ \t]*(paths|paths-ignore)[ \t]*:/) {
+    has_path_filters=1
   }
 
   # types 配列の検出と opened/reopened/synchronize 判定
@@ -138,8 +138,8 @@ END {
 
   # 最後のトリガーブロックが終了していない場合（ファイル終端）の判定
   if (in_pr) {
-    if (current_trigger == "pull_request" && has_filters) {
-      # pull_request でフィルターがある場合は常時実行ではない
+    if (current_trigger == "pull_request" && has_path_filters) {
+      # pull_request で paths フィルターがある場合は常時実行ではない
     } else if (!found_types || (has_opened && has_reopened && has_sync)) {
       always_runs = 1
     }
