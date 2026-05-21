@@ -60,8 +60,9 @@
 
 ## ドキュメント更新
 
-- `config.json`: 設定変更時に更新
-- PR プレビューコメントで変更影響を確認
+- `apply-settings.sh`: コマンドライン引数や機能追加時にヘルプメッセージを更新
+- `config.json`: 設定スキーマの変更時にプロンプトファイル内の構造説明を更新
+- 各プロンプトファイル (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md`): プロジェクトのルール変更時に同期して更新
 
 ## リポジトリ固有
 
