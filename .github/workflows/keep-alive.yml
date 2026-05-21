@@ -31,11 +31,20 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 非アクティブにより無効化されたワークフローを取得し再有効化
-          # プロセス置換を使用してサブシェル内のエラーを親シェルに伝播させる
+          # 非アクティブにより無効化されたワークフロー ID を取得
+          # コマンド置換で取得することで set -e が gh api の失敗を検知する
+          workflow_ids=$(gh api "repos/${{ github.repository }}/actions/workflows" \
+            --paginate \
+            --jq '.workflows[] | select(.state == "disabled_inactivity") | .id')
+
+          if [ -z "$workflow_ids" ]; then
+            echo "再有効化対象のワークフローはありません"
+            exit 0
+          fi
+
+          # ヒアストリングから読み込むことで while ループがサブシェルで動作せず
+          # gh api PUT の失敗を set -e が直接検知できる
           while read -r workflow_id; do
             gh api --method PUT "repos/${{ github.repository }}/actions/workflows/${workflow_id}/enable"
             echo "Enabled workflow ID: ${workflow_id}"
-          done < <(gh api "repos/${{ github.repository }}/actions/workflows" \
-            --paginate \
-            --jq '.workflows[] | select(.state == "disabled_inactivity") | .id')
+          done <<< "$workflow_ids"
