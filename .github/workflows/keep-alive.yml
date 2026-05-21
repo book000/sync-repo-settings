@@ -1,0 +1,39 @@
+name: Keep Alive
+
+# GitHub Actions は 60 日間リポジトリへのアクティビティがないと
+# スケジュールワークフローを自動的に無効化する。
+# このワークフローは定期的に実行し、無効化されたワークフローを
+# GitHub API で再有効化する。
+# 参考: https://gooner.hateblo.jp/entry/2025/02/27/163322
+#
+# 注意: ワークフローの実行自体はリポジトリアクティビティとしてカウントされない。
+# そのため、このワークフロー自身が 60 日以上実行されない場合は
+# 無効化され自己再開できなくなる（ブートストラップ問題）。
+# その場合は workflow_dispatch による手動実行で再開する必要がある。
+
+on:
+  schedule:
+    # 毎月 1 日 0:00 UTC に実行
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    name: Keep Alive
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+
+    steps:
+      - name: 非アクティブにより無効化されたワークフローを再有効化
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 非アクティブにより無効化されたワークフローを取得し再有効化
+          gh api "repos/${{ github.repository }}/actions/workflows" \
+            --paginate \
+            --jq '.workflows[] | select(.state == "disabled_inactivity") | .id' \
+          | while read -r workflow_id; do
+            gh api --method PUT "repos/${{ github.repository }}/actions/workflows/${workflow_id}/enable"
+            echo "Enabled workflow ID: ${workflow_id}"
+          done
