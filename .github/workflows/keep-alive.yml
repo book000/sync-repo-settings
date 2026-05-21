@@ -13,7 +13,7 @@ name: Keep Alive
 
 on:
   schedule:
-    # 毎月 1 日 0:00 UTC に実行
+    # 毎月 1 日 AM 9:00 JST (UTC 0:00) に実行
     - cron: '0 0 1 * *'
   workflow_dispatch:
 
@@ -29,11 +29,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           # 非アクティブにより無効化されたワークフローを取得し再有効化
-          gh api "repos/${{ github.repository }}/actions/workflows" \
-            --paginate \
-            --jq '.workflows[] | select(.state == "disabled_inactivity") | .id' \
-          | while read -r workflow_id; do
+          # プロセス置換を使用してサブシェル内のエラーを親シェルに伝播させる
+          while read -r workflow_id; do
             gh api --method PUT "repos/${{ github.repository }}/actions/workflows/${workflow_id}/enable"
             echo "Enabled workflow ID: ${workflow_id}"
-          done
+          done < <(gh api "repos/${{ github.repository }}/actions/workflows" \
+            --paginate \
+            --jq '.workflows[] | select(.state == "disabled_inactivity") | .id')
