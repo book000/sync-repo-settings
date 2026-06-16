@@ -123,6 +123,19 @@
       "settings": {
         "rulesets": { "mode": "skip" }
       }
+    },
+    {
+      "name": "pixivts: allow merge commit (release flow)",
+      "filter": {
+        "name_pattern": "^pixivts$"
+      },
+      "settings": {
+        "repo_settings": {
+          "values": {
+            "allow_merge_commit": true
+          }
+        }
+      }
     }
   ]
 }
