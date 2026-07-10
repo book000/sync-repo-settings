@@ -57,34 +57,16 @@
 ## コード改修時のルール
 
 - 日本語と英数字の間には、半角スペースを挿入する
-- 既存のエラーメッセージで先頭に絵文字がある場合は、全体でエラーメッセージに絵文字を設定する。絵文字はエラーメッセージに即した一文字とする
 - `set -euo pipefail` を使用してエラー処理を厳密にする
 - 変数は `"$VAR"` のようにダブルクォートで囲む
 - 関数内では `local` を使用してスコープを限定する（ただしトップレベルでは使用しない）
 - API レスポンスのエラーハンドリングを必ず行う
 - `jq` のエラーを適切にハンドリングする
-- シェルスクリプトの各関数には、用途、引数、戻り値を日本語でコメント（docstring 形式）として記載する
-
-## 相談ルール
-
-### Codex CLI (ask-codex)
-
-- 実装コードに対するソースコードレビュー
-- シェルスクリプトの設計、エラーハンドリング方針
-
-### Gemini CLI (ask-gemini)
-
-- GitHub API の最新仕様確認
-- gh CLI の使用方法確認
-
-### 指摘への対応
-
-他エージェントが指摘・異議を提示した場合、必ず以下のいずれかを行う（黙殺禁止）:
-
-- 指摘を受け入れ、判断を修正する
-- 指摘を退け、その理由を明示する
+- 主要な関数には、その用途を説明する日本語コメントを関数定義の直前に記載する
 
 ## 開発コマンド
+
+- 前提: `gh` CLI がインストール・認証済みであること、`jq` がインストール済みであること
 
 ```bash
 # ドライラン（実際には適用しない）
@@ -111,14 +93,16 @@
 ```
 sync-repo-settings/
 ├── .github/
-│   └── workflows/
-│       ├── sync.yml           # 定期実行ワークフロー（毎日 AM 9:00 JST）
-│       └── pr-preview.yml     # PR 時の dry-run プレビュー
+│   ├── workflows/
+│   │   ├── sync.yml           # 定期実行ワークフロー（毎時実行）
+│   │   ├── pr-preview.yml     # PR 時の dry-run プレビュー
+│   │   ├── pr-preview-comment.yml # プレビュー結果を PR にコメント
+│   │   └── keep-alive.yml     # スケジュールワークフローの keep-alive
+│   └── copilot-instructions.md # GitHub Copilot コードレビュー向け指示
 ├── apply-settings.sh          # メイン適用スクリプト
+├── check-pr-trigger.awk       # PR トリガー判定用 awk スクリプト
 ├── config.json                # 設定ファイル（ターゲット、デフォルト設定、フィルタルール）
-├── CLAUDE.md                  # Claude Code 向け指示
-├── AGENTS.md                  # 汎用 AI エージェント向け指示
-└── GEMINI.md                  # Gemini CLI 向け指示
+└── CLAUDE.md                  # Claude Code 向け指示
 ```
 
 ### config.json の構造
@@ -137,14 +121,15 @@ sync-repo-settings/
 
 ## 実装パターン
 
-- **関数の定義**: 全ての関数は `function_name() { ... }` 形式で定義し、冒頭に docstring を記載する
+- **関数の定義**: 関数は `function_name() { ... }` 形式で定義し、定義の直前にその用途を説明する日本語コメントを記載する
 - **GitHub API 呼び出し**: `gh api` を使用し、`-H "$API_VERSION_HEADER"` を必ず含める
 - **設定の読み取り**: `jq` を使用して `config.json` から設定を抽出する
 
 ## ドキュメント更新ルール
 
-- `config.json` の構造を変更した場合は、`apply-settings.sh` のヘルプおよびプロンプトファイルの `config.json の構造` セクションを更新する
-- 新規機能（コマンドライン引数など）を追加した場合は、`apply-settings.sh` のヘルプおよび各プロンプトファイルの `開発コマンド` セクションを更新する
+- `config.json` の構造を変更した場合は、`apply-settings.sh` のヘルプおよび `CLAUDE.md` の `config.json の構造` セクションを更新する
+- 新規機能（コマンドライン引数など）を追加した場合は、`apply-settings.sh` のヘルプおよび `CLAUDE.md` の `開発コマンド` セクションを更新する
+- レビュー観点に影響する変更を行った場合は、`.github/copilot-instructions.md` も併せて見直す
 
 ## テスト方針
 
