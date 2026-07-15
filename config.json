@@ -136,6 +136,19 @@
           }
         }
       }
+    },
+    {
+      "name": "claude-code-jsonl-parser: allow merge commit (release flow)",
+      "filter": {
+        "name_pattern": "^claude-code-jsonl-parser$"
+      },
+      "settings": {
+        "repo_settings": {
+          "values": {
+            "allow_merge_commit": true
+          }
+        }
+      }
     }
   ]
 }
