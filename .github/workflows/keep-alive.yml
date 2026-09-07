@@ -2,19 +2,18 @@ name: Keep Alive
 
 # GitHub Actions は 60 日間リポジトリへのアクティビティがないと
 # スケジュールワークフローを自動的に無効化する。
-# このワークフローは定期的に実行し、無効化されたワークフローを
-# GitHub API で再有効化する。
+# このワークフローは対象ワークフローの有効化 API を定期的に呼び出すことで、
+# 無効化される前に無効化期限を延長し続ける（すでに有効な状態で呼び出しても
+# 期限は延長される）。無効化されるのを待って再有効化するわけではない。
 # 参考: https://gooner.hateblo.jp/entry/2025/02/27/163322
 #
-# 注意: ワークフローの実行自体はリポジトリアクティビティとしてカウントされない。
-# そのため、このワークフロー自身が 60 日以上実行されない場合は
-# 無効化され自己再開できなくなる（ブートストラップ問題）。
-# その場合は workflow_dispatch による手動実行で再開する必要がある。
+# 対象には本ワークフロー自身も含めているため、実行が継続する限り
+# 自己再開不能な無効化には陥らない。
 
 on:
   schedule:
-    # 毎月 1 日 AM 9:00 JST (UTC 0:00) に実行
-    - cron: '0 0 1 * *'
+    # 毎月 1 日・15 日 AM 9:00 JST (UTC 0:00) に実行
+    - cron: '0 0 1,15 * *'
   workflow_dispatch:
 
 jobs:
@@ -25,26 +24,21 @@ jobs:
       actions: write
 
     steps:
-      - name: 非アクティブにより無効化されたワークフローを再有効化
+      - name: 対象ワークフローを有効化して無効化期限を延長
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          # 非アクティブにより無効化されたワークフロー ID を取得
-          # コマンド置換で取得することで set -e が gh api の失敗を検知する
-          workflow_ids=$(gh api "repos/${{ github.repository }}/actions/workflows" \
-            --paginate \
-            --jq '.workflows[] | select(.state == "disabled_inactivity") | .id')
+          # 無効化期限を延長する対象ワークフロー（ファイル名で指定）
+          # ワークフロー ID の代わりにファイル名を渡せるため、
+          # 一覧取得・絞り込みが不要になる
+          workflow_files=(
+            "keep-alive.yml"
+            "sync.yml"
+          )
 
-          if [ -z "$workflow_ids" ]; then
-            echo "再有効化対象のワークフローはありません"
-            exit 0
-          fi
-
-          # ヒアストリングから読み込むことで while ループがサブシェルで動作せず
-          # gh api PUT の失敗を set -e が直接検知できる
-          while read -r workflow_id; do
-            gh api --method PUT "repos/${{ github.repository }}/actions/workflows/${workflow_id}/enable"
-            echo "Enabled workflow ID: ${workflow_id}"
-          done <<< "$workflow_ids"
+          for workflow_file in "${workflow_files[@]}"; do
+            gh api --method PUT "repos/${{ github.repository }}/actions/workflows/${workflow_file}/enable"
+            echo "Enabled workflow: ${workflow_file}"
+          done
