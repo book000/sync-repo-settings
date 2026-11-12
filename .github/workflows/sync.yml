@@ -30,16 +30,19 @@ jobs:
       - name: Run apply-settings
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          # Pass inputs via env to avoid script injection through ${{ }} interpolation
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_TARGET: ${{ inputs.target }}
         run: |
           chmod +x ./apply-settings.sh
 
           # Build the arguments as an array (whitespace-safe)
           ARGS=()
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
             ARGS+=("--dry-run")
           fi
-          if [ -n "${{ inputs.target }}" ]; then
-            ARGS+=("--target" "${{ inputs.target }}")
+          if [ -n "$INPUT_TARGET" ]; then
+            ARGS+=("--target" "$INPUT_TARGET")
           fi
 
           ./apply-settings.sh "${ARGS[@]}"
