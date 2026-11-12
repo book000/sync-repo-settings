@@ -431,7 +431,7 @@ apply_repo_settings() {
   if [ ${#params[@]} -gt 0 ]; then
     gh_api -X PATCH "/repos/$owner/$repo" "${params[@]}" > /dev/null 2>&1 || {
       log "    repo_settings: error"
-      return 1
+      return 0
     }
     log "    repo_settings: done"
   fi
@@ -485,7 +485,7 @@ apply_workflow_permissions() {
     -f default_workflow_permissions="$default_perms" \
     -F can_approve_pull_request_reviews="$can_approve" > /dev/null 2>&1 || {
       log "    workflow_permissions: error"
-      return 1
+      return 0
     }
   log "    workflow_permissions: done"
 }
@@ -751,7 +751,7 @@ apply_rulesets() {
       }')
 
     local result error_output
-    error_output=$(create_temp_file) || return 1
+    error_output=$(create_temp_file) || return 0
     result=$(echo "$payload" | gh_api -X POST "/repos/$owner/$repo/rulesets" --input - 2>"$error_output") || {
       local error_msg
       error_msg=$(cat "$error_output")
@@ -762,7 +762,7 @@ apply_rulesets() {
         return 0
       fi
       log "    rulesets: creation error - $error_msg"
-      return 1
+      return 0
     }
 
     local ruleset_id
@@ -926,7 +926,7 @@ apply_rulesets() {
       }')
 
       local error_output
-      error_output=$(create_temp_file) || return
+      error_output=$(create_temp_file) || return 0
       if gh_api -X PUT "/repos/$owner/$repo/rulesets/$ruleset_id" --input - <<< "$update_payload" 2>"$error_output" > /dev/null; then
         local success_msg=""
         for msg in "${update_messages[@]}"; do

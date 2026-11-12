@@ -46,7 +46,7 @@ The shipped defaults (squash-merge-only repository settings, workflow permission
 | `-h`, `--help` | Show usage. |
 | `[CONFIG_FILE]` | Positional argument; defaults to `config.json` next to the script. |
 
-Progress and errors go to stderr; stdout carries only the Markdown output. A failing `repo_settings` or `workflow_permissions` API call, or a ruleset creation that fails with anything other than HTTP 403, aborts the whole run; failures of Actions variables, ruleset updates and Copilot review are logged and skipped.
+Progress and errors go to stderr; stdout carries only the Markdown output. A failing `repo_settings` or `workflow_permissions` API call, a ruleset creation that fails with anything other than HTTP 403, and failures of Actions variables, ruleset updates and Copilot review are logged and skipped, and the run continues with the next section and repository. The exit status stays 0 in these cases.
 
 ## Configuration
 
