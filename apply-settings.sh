@@ -767,6 +767,26 @@ detect_status_checks() {
   echo "$all_checks"
 }
 
+OWNER_TYPE=""
+
+# Prints the admin bypass actor of the current owner type (set by the main loop)
+admin_bypass_actor() {
+  if [ "$OWNER_TYPE" = "Organization" ]; then
+    echo '{"actor_id": null, "actor_type": "OrganizationAdmin", "bypass_mode": "pull_request"}'
+  else
+    echo '{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}'
+  fi
+}
+
+# Reads a bypass_actors array ($1), prints it with the admin actor present in pull_request mode.
+# RepositoryRole is matched by actor_id too, because other role IDs are not the admin and must stay untouched.
+ensure_admin_bypass() {
+  echo "$1" | jq --argjson admin "$(admin_bypass_actor)" '
+    def is_admin: .actor_type == $admin.actor_type and ($admin.actor_id == null or .actor_id == $admin.actor_id);
+    if any(.[]; is_admin) then map(if is_admin then .bypass_mode = "pull_request" else . end)
+    else . + [$admin] end'
+}
+
 apply_rulesets() {
   local owner="$1"
   local repo="$2"
@@ -837,7 +857,7 @@ apply_rulesets() {
       --arg enforcement "$(echo "$template" | jq -r '.enforcement // "active"')" \
       --argjson conditions "$(echo "$template" | jq '.conditions // {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}}')" \
       --argjson rules "$rules_array" \
-      --argjson bypass_actors "$(echo "$template" | jq '.bypass_actors // []')" \
+      --argjson bypass_actors "$(ensure_admin_bypass "$(echo "$template" | jq '.bypass_actors // []')")" \
       '{
         name: $name,
         target: $target,
@@ -946,6 +966,38 @@ apply_rulesets() {
         fi
       fi
 
+      # Only required_approving_review_count of the pull_request rule is synced; other parameters vary per repository
+      local template_review_count
+      template_review_count=$(echo "$template" | jq 'if (.rules.pull_request // {}) | has("required_approving_review_count") then .rules.pull_request.required_approving_review_count else null end')
+      local has_pr_rule
+      has_pr_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "pull_request")] | length')
+      local existing_review_count
+      existing_review_count=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "pull_request")][0].parameters.required_approving_review_count')
+
+      local review_count_changed=false
+      if [ "$template_review_count" != "null" ] && [ "$has_pr_rule" != "0" ] && [ "$template_review_count" != "$existing_review_count" ]; then
+        review_count_changed=true
+        needs_update=true
+        update_messages+=("pull_request: required_approving_review_count $existing_review_count→$template_review_count")
+      fi
+
+      # Add the admin actor, or correct its mode; other actors are preserved as they are
+      local existing_actors new_actors admin_actor_type existing_admin_mode
+      existing_actors=$(echo "$existing_ruleset" | jq -c '.bypass_actors // []')
+      new_actors=$(ensure_admin_bypass "$existing_actors" | jq -c .)
+      admin_actor_type=$(admin_bypass_actor | jq -r '.actor_type')
+      existing_admin_mode=$(echo "$existing_actors" | jq -r --argjson admin "$(admin_bypass_actor)" '
+        [.[] | select(.actor_type == $admin.actor_type and ($admin.actor_id == null or .actor_id == $admin.actor_id))][0].bypass_mode // empty')
+
+      if [ "$new_actors" != "$existing_actors" ]; then
+        needs_update=true
+        if [ -z "$existing_admin_mode" ]; then
+          update_messages+=("bypass_actors: add $admin_actor_type (pull_request)")
+        else
+          update_messages+=("bypass_actors: $admin_actor_type bypass_mode $existing_admin_mode→pull_request")
+        fi
+      fi
+
       if [ "$needs_update" = false ]; then
         log_verbose "rulesets: existing ruleset found ($ruleset_count), no changes"
         return
@@ -1012,14 +1064,25 @@ apply_rulesets() {
         fi
       fi
 
+      if [ "$review_count_changed" = true ]; then
+        updated_rules=$(echo "$updated_rules" | jq --argjson count "$template_review_count" '
+          map(
+            if .type == "pull_request" then
+              .parameters.required_approving_review_count = $count
+            else
+              .
+            end
+          )')
+      fi
+
       local update_payload
-      update_payload=$(echo "$existing_ruleset" | jq --argjson rules "$updated_rules" '{
+      update_payload=$(echo "$existing_ruleset" | jq --argjson rules "$updated_rules" --argjson bypass_actors "$new_actors" '{
         name: .name,
         target: .target,
         enforcement: .enforcement,
         conditions: .conditions,
         rules: $rules,
-        bypass_actors: .bypass_actors
+        bypass_actors: $bypass_actors
       }')
 
       local error_output
@@ -1200,6 +1263,7 @@ for owner in "${TARGETS[@]}"; do
     log "Error: Owner not found: $owner"
     continue
   }
+  OWNER_TYPE="$owner_type"
 
   if [ "$owner_type" = "Organization" ]; then
     repos_url="https://api.github.com/orgs/${owner}/repos?per_page=100&type=all&sort=full_name"
