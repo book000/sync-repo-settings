@@ -161,7 +161,7 @@ evaluate_filter() {
   local result="true"
 
   # is_archived
-  local is_archived_filter=$(echo "$filter_json" | jq -r '.is_archived // empty')
+  local is_archived_filter=$(echo "$filter_json" | jq -r '.is_archived | select(. != null)')
   if [ -n "$is_archived_filter" ]; then
     local repo_archived=$(echo "$repo_json" | jq -r '.archived')
     if [ "$is_archived_filter" != "$repo_archived" ]; then
@@ -171,7 +171,7 @@ evaluate_filter() {
   fi
 
   # is_fork
-  local is_fork_filter=$(echo "$filter_json" | jq -r '.is_fork // empty')
+  local is_fork_filter=$(echo "$filter_json" | jq -r '.is_fork | select(. != null)')
   if [ -n "$is_fork_filter" ]; then
     local repo_fork=$(echo "$repo_json" | jq -r '.fork')
     if [ "$is_fork_filter" != "$repo_fork" ]; then
@@ -181,7 +181,7 @@ evaluate_filter() {
   fi
 
   # is_template
-  local is_template_filter=$(echo "$filter_json" | jq -r '.is_template // empty')
+  local is_template_filter=$(echo "$filter_json" | jq -r '.is_template | select(. != null)')
   if [ -n "$is_template_filter" ]; then
     local repo_template=$(echo "$repo_json" | jq -r '.is_template')
     if [ "$is_template_filter" != "$repo_template" ]; then
@@ -241,7 +241,7 @@ evaluate_filter() {
   fi
 
   # has_pr_workflow (special: cannot be decided from the repository object alone, so the workflow files are inspected)
-  local has_pr_workflow_filter=$(echo "$filter_json" | jq -r '.has_pr_workflow // empty')
+  local has_pr_workflow_filter=$(echo "$filter_json" | jq -r '.has_pr_workflow | select(. != null)')
   if [ -n "$has_pr_workflow_filter" ]; then
     local owner=$(echo "$repo_json" | jq -r '.owner.login')
     local repo=$(echo "$repo_json" | jq -r '.name')
@@ -451,7 +451,7 @@ apply_workflow_permissions() {
 
   local values=$(echo "$settings" | jq '.values // {}')
   local default_perms=$(echo "$values" | jq -r '.default_workflow_permissions // "write"')
-  local can_approve=$(echo "$values" | jq -r '.can_approve_pull_request_reviews // "true"')
+  local can_approve=$(echo "$values" | jq -r 'if .can_approve_pull_request_reviews == null then "true" else .can_approve_pull_request_reviews end')
 
   local current_settings
   current_settings=$(gh_api "/repos/$owner/$repo/actions/permissions/workflow" 2>/dev/null) || {
@@ -659,7 +659,7 @@ detect_status_checks() {
   local settings="$3"
 
   local exclude_patterns=$(echo "$settings" | jq -r '.exclude_patterns // [] | join("|")')
-  local prefer_finished=$(echo "$settings" | jq -r '.prefer_finished_jobs // true')
+  local prefer_finished=$(echo "$settings" | jq -r 'if .prefer_finished_jobs == null then true else .prefer_finished_jobs end')
 
   local workflows
   workflows=$(gh_api "/repos/$owner/$repo/contents/.github/workflows" 2>/dev/null | jq -r '.[].name' 2>/dev/null) || {
@@ -799,7 +799,7 @@ apply_rulesets() {
     return
   fi
 
-  local create_if_missing=$(echo "$settings" | jq -r '.create_if_missing // true')
+  local create_if_missing=$(echo "$settings" | jq -r 'if .create_if_missing == null then true else .create_if_missing end')
   local template=$(echo "$settings" | jq '.template // {}')
 
   local existing_rulesets=$(gh_api "/repos/$owner/$repo/rulesets" 2>/dev/null) || existing_rulesets="[]"

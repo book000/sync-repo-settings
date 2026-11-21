@@ -89,7 +89,7 @@ For each workflow file in `.github/workflows` the script keeps the ones that run
 
 ### Rules
 
-`rules` are evaluated in order for each repository. Every matching rule is deep-merged over `defaults` (objects are merged, other values replaced). A `filter` is a set of conditions that must all hold; an empty filter matches everything.
+`rules` are evaluated in order for each repository. Every matching rule is deep-merged over `defaults` (objects are merged, other values replaced). A `filter` is a set of conditions that must all hold; an empty filter matches everything. A boolean filter value of `false` matches only repositories where the property is false; only a missing or `null` key skips the condition. Likewise, an explicit `false` for `can_approve_pull_request_reviews`, `create_if_missing` or `prefer_finished_jobs` is honored, and only a missing or `null` value falls back to the default.
 
 | Filter key | Matches |
 |---|---|
