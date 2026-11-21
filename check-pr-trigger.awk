@@ -13,7 +13,6 @@ BEGIN {
   has_opened=0; has_reopened=0; has_sync=0
   has_path_filters=0
   always_runs=0  # 1 once any trigger always runs
-  current_trigger=""  # trigger type being processed
 }
 
 {
@@ -24,14 +23,14 @@ BEGIN {
   # Detect flow-style on: [pull_request, ...]
   if (line ~ /^[ \t]*on:[ \t]*\[/) {
     if (line ~ /(^|[^a-z_])(pull_request|pull_request_target)([^a-z_]|$)/) {
-      print "true"; exit 0
+      always_runs=1; found_pr="on"; exit 0  # exit runs END, which prints the single result
     }
     next
   }
 
   # Detect scalar on: pull_request
   if (line ~ /^[ \t]*on:[ \t]*(pull_request|pull_request_target)[ \t]*$/) {
-    print "true"; exit 0
+    always_runs=1; found_pr="on"; exit 0
   }
 
   # Start of the on: block
@@ -41,8 +40,8 @@ BEGIN {
   if (in_on && i <= on_i) {
     # At the end of the on: block, evaluate the last trigger block
     if (in_pr) {
-      if (current_trigger == "pull_request" && has_path_filters) {
-        # A paths filter on pull_request means it does not always run
+      if (has_path_filters) {
+        # A paths filter means it does not always run
       } else if (!found_types || (has_opened && has_reopened && has_sync)) {
         always_runs = 1
       }
@@ -54,34 +53,34 @@ BEGIN {
   # Detect the pull_request_target key (checked before pull_request)
   if (line ~ /^[ \t]*pull_request_target[ \t]*:/) {
     if (in_pr) {
-      if (current_trigger == "pull_request" && has_path_filters) {
-        # A paths filter on pull_request means it does not always run
+      if (has_path_filters) {
+        # A paths filter means it does not always run
       } else if (!found_types || (has_opened && has_reopened && has_sync)) {
         always_runs = 1
       }
     }
     # New trigger block: reset the state
-    found_pr="pull_request_target"; current_trigger="pull_request_target"
+    found_pr="pull_request_target"
     in_pr=1; pr_i=i; in_types=0
     found_types=0; has_opened=0; has_reopened=0; has_sync=0; has_path_filters=0
     if (line ~ /types[ \t]*:/) found_types=1
     if (line ~ /(^|[^a-z_])opened([^a-z_]|$)/) has_opened=1
     if (line ~ /(^|[^a-z_])reopened([^a-z_]|$)/) has_reopened=1
     if (line ~ /(^|[^a-z_])synchronize([^a-z_]|$)/) has_sync=1
-    # paths/branches filters are ignored for pull_request_target
+    if (line ~ /(paths|paths-ignore)[ \t]*:/) has_path_filters=1
     next
   }
   # Detect the pull_request key (excluding _target)
   if (line ~ /^[ \t]*pull_request[ \t]*:/ && line !~ /_target/) {
     if (in_pr) {
-      if (current_trigger == "pull_request" && has_path_filters) {
-        # A paths filter on pull_request means it does not always run
+      if (has_path_filters) {
+        # A paths filter means it does not always run
       } else if (!found_types || (has_opened && has_reopened && has_sync)) {
         always_runs = 1
       }
     }
     # New trigger block: reset the state
-    found_pr="pull_request"; current_trigger="pull_request"
+    found_pr="pull_request"
     in_pr=1; pr_i=i; in_types=0
     found_types=0; has_opened=0; has_reopened=0; has_sync=0; has_path_filters=0
     if (line ~ /types[ \t]*:/) found_types=1
@@ -94,8 +93,8 @@ BEGIN {
 
   # End of the pull_request / pull_request_target block
   if (in_pr && i <= pr_i) {
-    if (current_trigger == "pull_request" && has_path_filters) {
-      # A paths filter on pull_request means it does not always run
+    if (has_path_filters) {
+      # A paths filter means it does not always run
     } else if (!found_types || (has_opened && has_reopened && has_sync)) {
       always_runs = 1
     }
@@ -135,8 +134,8 @@ END {
 
   # Evaluate the last trigger block if it is still open (end of file)
   if (in_pr) {
-    if (current_trigger == "pull_request" && has_path_filters) {
-      # A paths filter on pull_request means it does not always run
+    if (has_path_filters) {
+      # A paths filter means it does not always run
     } else if (!found_types || (has_opened && has_reopened && has_sync)) {
       always_runs = 1
     }

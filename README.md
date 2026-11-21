@@ -85,7 +85,7 @@ A setting key that is absent from the effective settings of a repository (`defau
 
 ### Status check detection
 
-For each workflow file in `.github/workflows` the script keeps the ones that run for the whole PR lifecycle (`check-pr-trigger.awk`: a `pull_request` or `pull_request_target` trigger without a `paths` filter on `pull_request`, and with either no `types` or all of `opened`, `reopened` and `synchronize`). From the latest finished run of each kept workflow (falling back to the latest run) it takes one job name as the required check; with `prefer_finished_jobs` a job named like `finished-xxx` or `xxx finished` wins over the first job. Workflows with no run yet contribute nothing.
+For each workflow file in `.github/workflows` the script keeps the ones that run for the whole PR lifecycle (`check-pr-trigger.awk`: a `pull_request` or `pull_request_target` trigger without a `paths` or `paths-ignore` filter, and with either no `types` or all of `opened`, `reopened` and `synchronize`). From the latest finished run of each kept workflow (falling back to the latest run) it takes one job name as the required check; with `prefer_finished_jobs` a job named like `finished-xxx` or `xxx finished` wins over the first job. Workflows with no run yet contribute nothing.
 
 ### Rules
 
