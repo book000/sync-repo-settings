@@ -795,15 +795,27 @@ apply_rulesets() {
   local create_if_missing=$(echo "$settings" | jq -r 'if .create_if_missing == null then true else .create_if_missing end')
   local template=$(echo "$settings" | jq '.template // {}')
 
-  local existing_rulesets=$(gh_api "/repos/$owner/$repo/rulesets" 2>/dev/null) || existing_rulesets="[]"
+  local existing_rulesets
+  existing_rulesets=$(gh_api --paginate --slurp "/repos/$owner/$repo/rulesets?includes_parents=false&per_page=100" 2>/dev/null | jq 'add') || {
+    log "    rulesets: failed to fetch rulesets"
+    return
+  }
 
   # The response is an object (not an array) when the API returned an error
   if ! echo "$existing_rulesets" | jq -e 'type == "array"' > /dev/null 2>&1; then
     log_verbose "rulesets: failed to fetch rulesets (invalid response)"
-    existing_rulesets="[]"
+    return
   fi
 
-  local ruleset_count=$(echo "$existing_rulesets" | jq 'length')
+  local template_name=$(echo "$template" | jq -r '.name // "master"')
+  local template_target=$(echo "$template" | jq -r '.target // "branch"')
+  local matching_rulesets
+  matching_rulesets=$(echo "$existing_rulesets" | jq --arg name "$template_name" --arg target "$template_target" --arg source "$owner/$repo" '[.[] | select(.name == $name and .target == $target and .source_type == "Repository" and (.source | ascii_downcase) == ($source | ascii_downcase))]')
+  local ruleset_count=$(echo "$matching_rulesets" | jq 'length')
+  if [ "$ruleset_count" -gt 1 ]; then
+    log "    rulesets: multiple matching repository rulesets, skipped"
+    return
+  fi
 
   if [ "$ruleset_count" = "0" ]; then
     if [ "$create_if_missing" != "true" ]; then
@@ -885,9 +897,8 @@ apply_rulesets() {
   else
     # An existing ruleset is updated when mode is upsert
     if [ "$mode" = "upsert" ]; then
-      # Only the first ruleset is updated (normally the master ruleset)
-      local ruleset_id=$(echo "$existing_rulesets" | jq -r '.[0].id')
-      local ruleset_name=$(echo "$existing_rulesets" | jq -r '.[0].name')
+      local ruleset_id=$(echo "$matching_rulesets" | jq -r '.[0].id')
+      local ruleset_name="$template_name"
 
       local existing_ruleset
       existing_ruleset=$(gh_api "/repos/$owner/$repo/rulesets/$ruleset_id" 2>/dev/null) || {
@@ -895,201 +906,68 @@ apply_rulesets() {
         return
       }
 
-      local needs_update=false
-      local update_messages=()
-
       local status_check_settings=$(echo "$template" | jq '.rules.required_status_checks // {}')
       local detection=$(echo "$status_check_settings" | jq -r '.detection // "auto"')
-
       local status_checks="[]"
       if [ "$detection" = "auto" ]; then
         status_checks=$(detect_status_checks "$owner" "$repo" "$status_check_settings")
       fi
 
-      local existing_status_checks
-      existing_status_checks=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks] | flatten')
+      local update_payload
+      update_payload=$(echo "$existing_ruleset" | jq \
+        --argjson template "$template" \
+        --argjson checks "$status_checks" \
+        --argjson admin "$(admin_bypass_actor)" '
+        def set_rule($type; $params):
+          if any(.[]; .type == $type) then
+            map(if .type == $type then .parameters = ((.parameters // {}) + $params) else . end)
+          else . + [{type: $type, parameters: $params}] end;
+        def flag_rule($type; $enabled):
+          if $enabled then
+            if any(.[]; .type == $type) then . else . + [{type: $type}] end
+          else map(select(.type != $type)) end;
+        def actor_key: [.actor_type, .actor_id];
+        . as $old |
+        ($template.rules // {}) as $config |
+        ($old.rules // []
+          | flag_rule("deletion"; $config.deletion != false)
+          | flag_rule("non_fast_forward"; $config.non_fast_forward != false)
+          | set_rule("pull_request"; $config.pull_request // {})
+          | set_rule("copilot_code_review"; $config.copilot_code_review // {})
+          | if ($checks | length) > 0 then
+              set_rule("required_status_checks"; (($config.required_status_checks // {} | del(.detection, .exclude_patterns, .prefer_finished_jobs)) + {required_status_checks: $checks}))
+            elif any(.[]; .type == "required_status_checks") then
+              set_rule("required_status_checks"; ($config.required_status_checks // {} | del(.detection, .exclude_patterns, .prefer_finished_jobs)))
+            else . end) as $rules |
+        (($old.bypass_actors // []) as $existing |
+          reduce ($template.bypass_actors // [])[] as $actor ($existing;
+            map(select(actor_key != ($actor | actor_key))) + [$actor])
+          | map(if actor_key == ($admin | actor_key) then .bypass_mode = "pull_request" else . end)
+          | if any(.[]; actor_key == ($admin | actor_key)) then . else . + [$admin] end) as $actors |
+        {name: $old.name, target: $old.target,
+         enforcement: ($template.enforcement // "active"),
+         conditions: ($template.conditions // {ref_name: {include: ["~DEFAULT_BRANCH"], exclude: []}}),
+         rules: $rules, bypass_actors: $actors}')
 
-      # Compare the detected status checks with the existing ones
-      local new_contexts=$(echo "$status_checks" | jq -r '[.[].context] | sort | join(",")')
-      local existing_contexts=$(echo "$existing_status_checks" | jq -r '[.[].context] | sort | join(",")')
-
-      local status_checks_changed=false
-      if [ "$status_checks" != "[]" ] && [ "$new_contexts" != "$existing_contexts" ]; then
-        status_checks_changed=true
-        needs_update=true
-        update_messages+=("status checks: $existing_contexts → $new_contexts")
-      fi
-
-      # Read the copilot_code_review settings (has() is used because boolean false must be handled correctly)
-      local copilot_settings=$(echo "$template" | jq '.rules.copilot_code_review // {}')
-      local copilot_review_on_push
-      local copilot_review_draft
-      if echo "$copilot_settings" | jq -e 'has("review_on_push")' > /dev/null 2>&1; then
-        copilot_review_on_push=$(echo "$copilot_settings" | jq '.review_on_push')
-      else
-        copilot_review_on_push="null"
-      fi
-      if echo "$copilot_settings" | jq -e 'has("review_draft_pull_requests")' > /dev/null 2>&1; then
-        copilot_review_draft=$(echo "$copilot_settings" | jq '.review_draft_pull_requests')
-      else
-        copilot_review_draft="null"
-      fi
-
-      local existing_copilot
-      existing_copilot=$(echo "$existing_ruleset" | jq '.rules[] | select(.type == "copilot_code_review") | .parameters // {}')
-      local existing_review_on_push
-      local existing_review_draft
-      if [ -n "$existing_copilot" ] && echo "$existing_copilot" | jq -e 'has("review_on_push")' > /dev/null 2>&1; then
-        existing_review_on_push=$(echo "$existing_copilot" | jq '.review_on_push')
-      else
-        existing_review_on_push="null"
-      fi
-      if [ -n "$existing_copilot" ] && echo "$existing_copilot" | jq -e 'has("review_draft_pull_requests")' > /dev/null 2>&1; then
-        existing_review_draft=$(echo "$existing_copilot" | jq '.review_draft_pull_requests')
-      else
-        existing_review_draft="null"
-      fi
-
-      local copilot_changed=false
-      if [ "$copilot_review_on_push" != "null" ] || [ "$copilot_review_draft" != "null" ]; then
-        if [ "$copilot_review_on_push" != "$existing_review_on_push" ] || [ "$copilot_review_draft" != "$existing_review_draft" ]; then
-          copilot_changed=true
-          needs_update=true
-          update_messages+=("copilot_code_review: review_on_push=$existing_review_on_push→$copilot_review_on_push, review_draft=$existing_review_draft→$copilot_review_draft")
-        fi
-      fi
-
-      # Only required_approving_review_count of the pull_request rule is synced; other parameters vary per repository
-      local template_review_count
-      template_review_count=$(echo "$template" | jq 'if (.rules.pull_request // {}) | has("required_approving_review_count") then .rules.pull_request.required_approving_review_count else null end')
-      local has_pr_rule
-      has_pr_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "pull_request")] | length')
-      local existing_review_count
-      existing_review_count=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "pull_request")][0].parameters.required_approving_review_count')
-
-      local review_count_changed=false
-      if [ "$template_review_count" != "null" ] && [ "$has_pr_rule" != "0" ] && [ "$template_review_count" != "$existing_review_count" ]; then
-        review_count_changed=true
-        needs_update=true
-        update_messages+=("pull_request: required_approving_review_count $existing_review_count→$template_review_count")
-      fi
-
-      # Add the admin actor, or correct its mode; other actors are preserved as they are
-      local existing_actors new_actors admin_actor_type existing_admin_mode
-      existing_actors=$(echo "$existing_ruleset" | jq -c '.bypass_actors // []')
-      new_actors=$(ensure_admin_bypass "$existing_actors" | jq -c .)
-      admin_actor_type=$(admin_bypass_actor | jq -r '.actor_type')
-      existing_admin_mode=$(echo "$existing_actors" | jq -r --argjson admin "$(admin_bypass_actor)" '
-        [.[] | select(.actor_type == $admin.actor_type and ($admin.actor_id == null or .actor_id == $admin.actor_id))][0].bypass_mode // empty')
-
-      if [ "$new_actors" != "$existing_actors" ]; then
-        needs_update=true
-        if [ -z "$existing_admin_mode" ]; then
-          update_messages+=("bypass_actors: add $admin_actor_type (pull_request)")
-        else
-          update_messages+=("bypass_actors: $admin_actor_type bypass_mode $existing_admin_mode→pull_request")
-        fi
-      fi
-
-      if [ "$needs_update" = false ]; then
-        log_verbose "rulesets: existing ruleset found ($ruleset_count), no changes"
+      local changed_fields
+      changed_fields=$(jq -n -r --argjson old "$existing_ruleset" --argjson new "$update_payload" '
+        ["enforcement", "conditions", "rules", "bypass_actors"] |
+        map(select(($old[.] // []) != $new[.])) | join(", ")')
+      if [ -z "$changed_fields" ]; then
+        log_verbose "rulesets: existing ruleset found, no changes"
         return
       fi
 
       if [ "$DRY_RUN" = true ]; then
-        for msg in "${update_messages[@]}"; do
-          log "    [DRY-RUN] rulesets [$ruleset_name]: $msg"
-          md_log_change "  - **rulesets** [$ruleset_name]: $msg"
-        done
+        log "    [DRY-RUN] rulesets [$ruleset_name]: update $changed_fields"
+        md_log_change "  - **rulesets** [$ruleset_name]: update $changed_fields"
         return
       fi
-
-      local updated_rules
-      updated_rules=$(echo "$existing_ruleset" | jq '.rules')
-
-      if [ "$status_checks_changed" = true ]; then
-        local has_status_check_rule
-        has_status_check_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "required_status_checks")] | length')
-
-        if [ "$has_status_check_rule" = "0" ]; then
-          updated_rules=$(echo "$updated_rules" | jq --argjson new_checks "$status_checks" '
-            . + [{"type": "required_status_checks", "parameters": {"required_status_checks": $new_checks}}]
-          ')
-        else
-          updated_rules=$(echo "$updated_rules" | jq --argjson new_checks "$status_checks" '
-            map(
-              if .type == "required_status_checks" then
-                .parameters.required_status_checks = $new_checks
-              else
-                .
-              end
-            )')
-        fi
-      fi
-
-      if [ "$copilot_changed" = true ]; then
-        local has_copilot_rule
-        has_copilot_rule=$(echo "$existing_ruleset" | jq '[.rules[] | select(.type == "copilot_code_review")] | length')
-
-        # Build the new copilot parameters (null values are omitted)
-        local new_copilot_params
-        new_copilot_params=$(jq -n \
-          --argjson review_on_push "$copilot_review_on_push" \
-          --argjson review_draft "$copilot_review_draft" '
-          ($review_on_push | if . == null then {} else {review_on_push: .} end) as $on
-          | ($review_draft | if . == null then {} else {review_draft_pull_requests: .} end) as $draft
-          | $on + $draft
-          ')
-
-        if [ "$has_copilot_rule" = "0" ]; then
-          updated_rules=$(echo "$updated_rules" | jq --argjson params "$new_copilot_params" '
-            . + [{"type": "copilot_code_review", "parameters": $params}]
-          ')
-        else
-          updated_rules=$(echo "$updated_rules" | jq --argjson params "$new_copilot_params" '
-            map(
-              if .type == "copilot_code_review" then
-                .parameters = $params
-              else
-                .
-              end
-            )')
-        fi
-      fi
-
-      if [ "$review_count_changed" = true ]; then
-        updated_rules=$(echo "$updated_rules" | jq --argjson count "$template_review_count" '
-          map(
-            if .type == "pull_request" then
-              .parameters.required_approving_review_count = $count
-            else
-              .
-            end
-          )')
-      fi
-
-      local update_payload
-      update_payload=$(echo "$existing_ruleset" | jq --argjson rules "$updated_rules" --argjson bypass_actors "$new_actors" '{
-        name: .name,
-        target: .target,
-        enforcement: .enforcement,
-        conditions: .conditions,
-        rules: $rules,
-        bypass_actors: $bypass_actors
-      }')
 
       local error_output
       create_temp_file error_output || return 0
       if gh_api -X PUT "/repos/$owner/$repo/rulesets/$ruleset_id" --input - <<< "$update_payload" 2>"$error_output" > /dev/null; then
-        local success_msg=""
-        for msg in "${update_messages[@]}"; do
-          if [ -n "$success_msg" ]; then
-            success_msg="$success_msg, $msg"
-          else
-            success_msg="$msg"
-          fi
-        done
-        log "    rulesets [$ruleset_name]: updated ($success_msg)"
+        log "    rulesets [$ruleset_name]: updated ($changed_fields)"
       else
         local error_msg
         error_msg=$(cat "$error_output")

@@ -24,13 +24,14 @@ Requirements: Bash 4+ (`readarray`), `gh` (authenticated), `jq`, `awk`.
 ./apply-settings.sh --dry-run --repo owner/repo     # one repository
 ./apply-settings.sh --dry-run --markdown            # Markdown output used for PR comments
 ./apply-settings.sh --help
+bash tests/rulesets.sh                              # stubbed ruleset regression and dry run
 bash -n apply-settings.sh                           # syntax check
 shellcheck apply-settings.sh                        # SC2155 warnings are existing and accepted
 bash tests/all-skip.sh                              # stubbed dry-run regression check
 bash tests/temp-file-cleanup.sh                     # temp file cleanup regression
 ```
 
-There is no lint workflow. Verify changes with `bash -n`, `shellcheck`, the regression fixtures, and a `--dry-run` against a stubbed `gh`.
+There is no lint workflow. Verify changes with `bash -n`, `shellcheck`, all regression fixtures, and a `--dry-run` against a stubbed `gh`.
 
 ## Structure
 
