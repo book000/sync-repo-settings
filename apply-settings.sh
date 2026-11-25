@@ -339,23 +339,16 @@ merge_settings() {
   fi
 
   local all_override=$(echo "$overrides" | jq '.["_all"] // null')
-  if [ "$all_override" != "null" ]; then
-    local result="$defaults"
-    for key in repo_settings workflow_permissions actions_variables actions_policies rulesets copilot_code_review; do
-      result=$(echo "$result" | jq --argjson override "$all_override" ".${key} = (.${key} // {}) * \$override")
-    done
-    echo "$result"
-    return
-  fi
-
-  # Regular merge (a setting whose mode is skip is never overridden)
-  # Protect mode: skip so that later rules cannot overwrite it
   local result="$defaults"
   for key in repo_settings workflow_permissions actions_variables actions_policies rulesets copilot_code_review; do
     local current_mode
     current_mode=$(echo "$result" | jq -r ".${key}.mode // \"\"")
     local override_value
-    override_value=$(echo "$overrides" | jq ".${key} // null")
+    if [ "$all_override" != "null" ]; then
+      override_value="$all_override"
+    else
+      override_value=$(echo "$overrides" | jq ".${key} // null")
+    fi
 
     if [ "$override_value" != "null" ]; then
       if [ "$current_mode" = "skip" ]; then

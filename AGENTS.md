@@ -26,14 +26,16 @@ Requirements: Bash 4+ (`readarray`), `gh` (authenticated), `jq`, `awk`.
 ./apply-settings.sh --help
 bash -n apply-settings.sh                           # syntax check
 shellcheck apply-settings.sh                        # SC2155 warnings are existing and accepted
+bash tests/all-skip.sh                              # stubbed dry-run regression check
 ```
 
-There is no test suite or lint workflow. Verify changes with `bash -n`, `shellcheck`, and a `--dry-run` against a stubbed `gh`.
+There is no lint workflow. Verify changes with `bash -n`, `shellcheck`, and a `--dry-run` against a stubbed `gh`.
 
 ## Structure
 
 - `apply-settings.sh`: the whole tool. Functions: `evaluate_filter` (rule filters), `merge_settings` (defaults + matched rules), `apply_repo_settings`, `apply_workflow_permissions`, `apply_actions_variables`, `apply_actions_policies`, `detect_status_checks`, `apply_rulesets`, `apply_copilot_code_review`, then the main loop over targets and repositories.
 - `check-pr-trigger.awk`: decides whether a workflow file runs on the whole PR lifecycle. Called by `check_pr_trigger_always_runs`; it must stay next to the script.
+- `tests/all-skip.sh`: stubbed dry-run regression check for `_all` and skipped settings.
 - `config.json`: `targets`, `defaults` (each setting has a `mode` and `values`, or a ruleset `template`; `actions_policies` uses an array for `values` instead of an object), and `rules` (a `filter` plus `settings` overrides, evaluated in order).
 - `.github/workflows/sync.yml`: hourly run and manual dispatch (`target`, `dry_run` inputs); uses the `PERSONAL_ACCESS_TOKEN` repository secret.
 - `.github/workflows/pr-preview.yml` and `pr-preview-comment.yml`: run `--dry-run --markdown` for a PR and post the result as a PR comment. Fork PRs need approval of the `pr-preview` Environment, and approving runs the PR's own `apply-settings.sh` with the PAT.

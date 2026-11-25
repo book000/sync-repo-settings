@@ -50,6 +50,8 @@ The shipped defaults (squash-merge-only repository settings, workflow permission
 
 Progress and errors go to stderr; stdout carries only the Markdown output. A failing `repo_settings` or `workflow_permissions` API call, a ruleset creation that fails with anything other than HTTP 403, and failures of Actions variables, Actions policies, ruleset updates and Copilot review are logged and skipped, and the run continues with the next section and repository. The exit status stays 0 in these cases.
 
+Run `bash tests/all-skip.sh` to check that `_all` rules preserve skipped settings using a stubbed GitHub CLI.
+
 ## Configuration
 
 `config.json` has three top-level keys.
