@@ -1155,7 +1155,7 @@ apply_copilot_code_review() {
     return
   fi
 
-  echo "$rulesets" | jq -r '.[].id' | while read -r ruleset_id; do
+  while read -r ruleset_id; do
     local ruleset=$(gh_api "/repos/$owner/$repo/rulesets/$ruleset_id" 2>/dev/null) || continue
     local ruleset_name=$(echo "$ruleset" | jq -r '.name')
 
@@ -1216,7 +1216,7 @@ apply_copilot_code_review() {
     else
       log "    copilot_code_review [$ruleset_name]: updated"
     fi
-  done
+  done < <(echo "$rulesets" | jq -r '.[].id')
 }
 
 # =============================================================================
