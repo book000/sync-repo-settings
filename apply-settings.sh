@@ -25,13 +25,13 @@ cleanup_temp_files() {
 trap cleanup_temp_files EXIT
 
 create_temp_file() {
-  local tmp
-  tmp=$(mktemp) || {
+  local temp_file_path
+  temp_file_path=$(mktemp) || {
     echo "Failed to create temp file" >&2
     return 1
   }
-  TEMP_FILES+=("$tmp")
-  echo "$tmp"
+  TEMP_FILES+=("$temp_file_path")
+  printf -v "$1" '%s' "$temp_file_path"
 }
 
 # =============================================================================
@@ -564,7 +564,7 @@ apply_actions_policies() {
 
   local policies_path="/repos/$owner/$repo/actions/policies"
   local list_error list_json list_msg
-  list_error=$(create_temp_file) || return 0
+  create_temp_file list_error || return 0
   list_json=$(gh_api "$policies_path?per_page=100&has_parents=false" 2>"$list_error") || {
     list_msg=$(cat "$list_error")
     if echo "$list_msg" | grep -qE 'HTTP 403|HTTP 404|403 Forbidden|Not Found'; then
@@ -628,7 +628,7 @@ apply_actions_policies() {
     fi
 
     local mutate_error mutate_msg
-    mutate_error=$(create_temp_file) || return 0
+    create_temp_file mutate_error || return 0
     if echo "$payload" | gh_api -X "$method" "$path" --input - > /dev/null 2>"$mutate_error"; then
       log "    actions_policies: $done_label \"$name\""
     else
@@ -861,7 +861,7 @@ apply_rulesets() {
       }')
 
     local result error_output
-    error_output=$(create_temp_file) || return 0
+    create_temp_file error_output || return 0
     result=$(echo "$payload" | gh_api -X POST "/repos/$owner/$repo/rulesets" --input - 2>"$error_output") || {
       local error_msg
       error_msg=$(cat "$error_output")
@@ -1079,7 +1079,7 @@ apply_rulesets() {
       }')
 
       local error_output
-      error_output=$(create_temp_file) || return 0
+      create_temp_file error_output || return 0
       if gh_api -X PUT "/repos/$owner/$repo/rulesets/$ruleset_id" --input - <<< "$update_payload" 2>"$error_output" > /dev/null; then
         local success_msg=""
         for msg in "${update_messages[@]}"; do
